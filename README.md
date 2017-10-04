@@ -7,13 +7,6 @@ Source of Data: https://nlp.stanford.edu/projects/glove/
 Another interesting embedding to look into:
 https://github.com/commonsense/conceptnet-numberbatch
 
-However my laptop was taking too long to load it.
-So I am just going with GloVe.
-
-Ideally, it is preferrable for the network to learn embeddings in the context of the
-relevant dataset and its vocabulary, but loading pre trained embeddings may help to 
-train the network faster, though, perhaps, at the cost of quality in the long run.
-
 
 ```python
 import numpy as np
