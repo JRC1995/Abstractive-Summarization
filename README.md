@@ -283,7 +283,7 @@ print train_len
 
 
 
-```python
+
 The function transform_out() will convert the target output sample so that 
 it can be in a format which can be used by tensorflow's 
 sparse_softmax_cross_entropy_with_logits() for loss calculation.
@@ -293,7 +293,7 @@ All the words in the vocab_limit are like classes in this context.
 
 However, instead of being precisely one hot encoded the output will be transformed
 such that it will contain the list of indexes which would have been 'one' if it was one hot encoded.
-```
+
 
 
 ```python
