@@ -100,7 +100,7 @@ def vec2word(vec):   # converts a given vector representation into the represent
 ```
 
 Loading processed dataset from file.
-Data is preprocessed in Abstractive_Summarization_Preprocess.ipynb
+Data is preprocessed in [Data_Pre-processing.ipynb](https://github.com/JRC1995/Abstractive-Summarization/blob/master/Data%20Pre-processing.ipynb)
 Dataset source: https://www.kaggle.com/snap/amazon-fine-food-reviews
 
 
