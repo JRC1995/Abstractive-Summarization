@@ -227,7 +227,7 @@ print "Percentage of dataset with text length more than "+str(LEN)+": "+str((cou
 
 
 Following the aformentioned removal process.
-vec_summary_reduced and vec_texts_reduced will contained the remaining data after the removal.
+vec_summary_reduced and vec_texts_reduced will contain the remaining data after the removal.
 
 <b>Note: an important hyperparameter D is initialized here.</b>
 
