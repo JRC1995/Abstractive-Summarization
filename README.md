@@ -44,10 +44,7 @@ Here I will define functions for converting words to its vector representations 
 <b>word2vec():</b> converts words to its vector representations.
 If the word is not present in the vocabulary, and thus if it doesn't have any vector representation,
 the word will be considered as 'unk' (denotes unknown) and the vector representation of unk will be
-returned instead. However, this assumes that the word 'unk' is not being intentionally used in as a word.
-I mean looking at a sentence of word vectors, one can't be certain if the unk's word vector representation 
-is there because there was an unkwown word, or if the word 'unk' itself was there. So, what I am doing here 
-isn't exactly ideal. But, I will ignore it.
+returned instead. 
 
 <b>np_nearest_neighbour():</b> returns the word vector in the vocabularity that is most similar
 to word vector given as an argument. The similarity is evaluated based on the formula of cosine
@@ -55,7 +52,7 @@ similarity.
 
 <b>vec2word():</b> converts vectors to words. If the vector representation is unknown, and no corresponding word
 is known, then it returns the word representation of a known vector representation which is most similar 
-to the vector given as argument. The similarity is evaluated based on the formula of cosine similarity.
+to the vector given as argument (the np_nearest_neighbour() function is used for that).
 
 
 
@@ -93,7 +90,9 @@ def vec2word(vec):   # converts a given vector representation into the represent
 ```
 
 Loading processed dataset from file.
-Data is preprocessed in [Data_Pre-processing.ipynb](https://github.com/JRC1995/Abstractive-Summarization/blob/master/Data%20Pre-processing.ipynb)
+The Data is preprocessed in [Data_Pre-processing.ipynb](https://github.com/JRC1995/Abstractive-Summarization/blob/master/Data%20Pre-processing.ipynb)
+
+
 Dataset source: https://www.kaggle.com/snap/amazon-fine-food-reviews
 
 
@@ -108,7 +107,7 @@ with open ('vec_texts', 'rb') as fp:
     
 ```
 
-Loading vocab_limit and embd_limit (though I may not ever use embd_limit).
+Here, I am Loading vocab_limit and embd_limit (though I may not ever use embd_limit).
 Vocab_limit contains only vocabularies that are present in the dataset and 
 some special words representing markers 'eos', '<PAD>' etc.
 
@@ -126,12 +125,12 @@ with open ('embd_limit', 'rb') as fp:
     
 ```
 
-Here I am planning to reduce the size of the datasets.
+Here I am planning to reduce the size of the datasets, and remove some data that can be troublesome.
 
 <b>REMOVING DATA WITH SUMMARIES WHICH ARE TOO LONG</b>
 
 I will not be training the model in batches. I will train the model one sample at a time, because my laptop
-has a predisposition to freezing. So I am trying to not make it too intensive.
+will probably not be able to handle batch training (the kernel crashes now and then even with SGD ).
 
 However, if I was training in batches I had to choose a fixed maximum length for output.
 Each target output is marked with the word 'eos' at the end. After that each target output can be padded with
@@ -140,9 +139,9 @@ Each target output is marked with the word 'eos' at the end. After that each tar
 to a fixed length. 
 
 But, the fixed length should be less than or equal to the length of the longest target output so as to
-not discard any word from any output.
+not discard any word from any target-output sample.
 
-But there might be a few very long target outputs\summaries (say, 50+) whereas most summaries are near about
+But there may be a few very long target outputs\summaries (say, 50+) whereas most summaries are near about
 length 10. So to fix the length, lots of padding has to be done to most of the summaries just because there
 are a few long summaries. 
 
@@ -159,8 +158,10 @@ notebook.
 In this model I will try to implement <b>local attention</b> with standard encoder-decoder architecture.
 
 Where global attention looks at all the hidden states of the encoder to determine where to attend to,
-local attention invloves determining a position pt and look only at the hidden states under the range
-pt-D to pt+D. The range of pt-D to pt+D can be said to be the window where attention takes place.
+local attention looks only at the hidden states under the range pt-D to pt+D where D is empirically selected
+and pt is a position determined by the program.
+The range of pt-D to pt+D can be said to be the window where attention takes place.  Pt is the center of the
+window.
 
 I am treating D as a hyperparameter. The window size will be (pt-d)-(pt+d)+1 = 2D+1.
 
@@ -176,8 +177,8 @@ I will remove all input texts whose length is less than 2D+1.
 <b>REMOVING DATA WITH TEXTS(REVIEWS) WHICH ARE TOO LONG</b>
 
 The RNN encoders will encode one word at a time. No. of words in the text data or in other words,
-the length of the text size will also be the no. of timesteps for the encoder RNN. For the sake of simplicity
-and to make the training less intensive (so that it doesn't burden my laptop too much), I will be removing
+the length of the text size will also be the no. of timesteps for the encoder RNN. To make the training less intensive 
+(so that it doesn't burden my laptop too much), I will be removing
 all data with whose review size exceeds a given threshold (MAX_TEXT_LEN).
 
 
@@ -219,12 +220,12 @@ print "Percentage of dataset with text length more than "+str(LEN)+": "+str((cou
     Percentage of dataset with text length more than 80: 40.412% 
 
 
-Following the aformentioned removal process.
+Here I will start the aformentioned removal process.
 vec_summary_reduced and vec_texts_reduced will contain the remaining data after the removal.
 
 <b>Note: an important hyperparameter D is initialized here.</b>
 
-D determines the window size of local attention which I will elaborate later.
+D determines the window size of local attention as mentioned before. 
 
 
 ```python
@@ -326,7 +327,7 @@ Setting up tensorflow placeholders.
 The purpose of the placeholders are pretty much self explanatory from the name.
 
 Note: tf_seq_len, and tf_output_len aren't really necessary. They can be derived 
-from tf_text and tf_summary respectively, but ended up making them anyway.
+from tf_text and tf_summary respectively, but I ended up making them anyway.
 
 
 ```python
@@ -351,10 +352,11 @@ This idea is borrowed from: https://arxiv.org/abs/1504.00941
         
 The intuition behind it is that if one uses a plain RNN with ReLu activation,
 and hidden weight matrix as an identity, then if the input is null, and the bias
-is also initialized as tensor of zeros, the hidden state won't change 
-no matter how many timesteps - which is how it should be.
+is also initialized as with zeros, the hidden state won't change 
+no matter how many timesteps - which is how it should be. Intuitively,
+If the input has near zero values, then the context shouldn't be influenced as much.
 
-With that I am including residual recurrent attention connections.
+I am aslo including residual recurrent attention connections.
 
 Remember, the hyperparameter K?
 
@@ -374,7 +376,7 @@ the elements as said in the paper. But, here, I am normalizing it by softmax)
 The purpose for this is to created connections between hidden states of different timesteps,
 to establish long term dependencies.
 
-Note: Adding RRA will oppose the intuition behind identity initialization. But, anyway,
+Note: Adding RRA may somewhat oppose the purpose behind identity initialization. But, anyway,
 identity initialization (identity being orthonological) can still be a better initialization
 that random_normal or truncated_normal:
 https://smerity.com/articles/2016/orthogonal_init.html
@@ -486,7 +488,7 @@ for each of the encoded hidden state in the context of a particular
 decoder hidden state in each timestep - all to determine which encoded hidden
 states to attend to for a particular decoder hidden state context.
 
-More, specifically I am here, implementing local attention as opposed to global attention.
+More specifically, I am here implementing local attention as opposed to global attention.
 
 I already mentioned local attention before. Local attention mechanism involves focusing on
 a subset of encoded hidden states, whereas a gloabl attention mechanism invovles focusing on all
@@ -515,39 +517,40 @@ if pt = tf_seq_len x sigmoid(tensor)
 
 Then pt will be in the range 0 to tf_seq_len
 
-But, we can't have that. There is no tf_seq_len [position, since the length is tf_seq_len,
-the available positions are 0 to (tf_seq_len -1). Which is why I subtracted 1 from it.
+But, we can't have that. There is no tf_seq_len position. Since the length is tf_seq_len,
+the available positions are 0 to (tf_seq_len-1). Which is why I subtracted 1 from it.
 
 Next, we must have the value of pt to be such that it represents the CENTER of the window.
 If pt is too close to 0, pt-D will be negative - a non-existent position.
 If pt is too close to tf_seq_len, pt+D will be a non-existent position.
 
 So pt can't occupy the first D positions (0 to D-1) and it can't occupy the last D positions
-((tf_seq_len-D) to (tf_seq_len-1)). So a total 2D positions should be restricted to pt.
+((tf_seq_len-D) to (tf_seq_len-1)) in order to keep pt-D and pt+D as legal positions.
+So a total 2D positions should be restricted to pt.
 
 Which is why I further subtracted 2D from tf_seq_len.
 
-Still after calculating pt = positions x sigmoid(tensor)
-where positions = tf_seq_len-(2D+1)
-
+Still, after calculating pt = positions x sigmoid(tensor)
+where positions = tf_seq_len-(2D+1), 
 pt will merely range between 0 to tf_seq_len-(2D+1)
 
-pt still can't be 0 since pt-D will be negative. But the length of the range 
-of integer positions pt can occupy is perfect.
+We can't still accept pt to be 0 since pt-D will be negative. But the length of the range 
+of integer positions pt can occupy is now perfect.
 
-So at this point, we can simply center p at the window by adding a D.
+So at this point, we can simply center pt at the window by adding a D.
 
-After that pt will range from D to (tf_seq_len-1)-D
+After that, pt will range from D to (tf_seq_len-1)-D
 
-Now, you can check for yourself that pt+D, or pt-D will never become negative or exceed
+Now, it can be checked that pt+D, or pt-D will never become negative or exceed
 the total sequence length.
 
 After calculating pt, we can use the formulas presented in the paper to calculate
 the G score which signifies the weight (or attention) that should be given to a hidden state.
 
-G score is calculated for each of hidden states in the local window.
+G scores is calculated for each of hidden states in the local window. This is equivalent to
+a(s) used in the paper.
 
-The function returns the G score and the position pt, so that the model can create the 
+The function returns the G scores and the position pt, so that the model can create the 
 context vector. 
 
 
@@ -624,7 +627,8 @@ I will be performing a weighted summation of h_forward and h_backward.
 Whf will denote the weight for h_forward.
 Using sigmoid I am limit the range of Whf in 0 to 1.
 
-I intend to keep 'weight given to h_forward' + 'weight given to h_backward' to be = 1.
+I intend to keep 'weight given to h_forward' + 'weight given to h_backward' to be = 1
+(so that they can signify something like probabilities of two alternate possibilities)
 
 Which is why I am using (1-Whf) as the weight for h_backward.
 
@@ -644,7 +648,7 @@ I used the formulas mentioned here: https://nlp.stanford.edu/pubs/emnlp15_attn.p
 
 to calculate the first y (output) from the context vector and decoder hidden state.
 
-Not y is of the same size as the no. of vocabs in vocab_limit. Y is supposed to be 
+Note: y is of the same size as the no. of vocabs in vocab_limit. Y is supposed to be 
 a probability distribution. The value of index i of Y denotes the probability for Y 
 to be the word that is located in the index i of vacab_limit.
 
@@ -653,12 +657,13 @@ the initial hidden state the RNN produces the next decoder hidden state and the 
 continues. 
 
 Here, I used the attended_hidden_state as the initial hidden state for the
-decoder RNN. This seemed to produce results with better variety.
+decoder RNN. Though I have some confusion about this, it seemed to produce 
+results with better variety.
 
-Since I will be training sample to sample, I can dynamically send the output len 
-of the current sample, and the decoder loops for the given output_len times.
+Since I will be training sample to sample, I can dynamically send the output length 
+of the current sample, and the decoder loops for the given 'output length' times.
 
-NOTE: I am saying y without softmax in the tensorarray output. Why? Because
+NOTE: I am saving y without softmax in the tensorarray output. Why? Because
 I will be using tensorflow cost functions that requires the logits to be without
 softmax. 
 
@@ -809,13 +814,15 @@ def model(tf_text,tf_seq_len,tf_output_len):
     return output
 ```
 
-The model function is initiated. The output is
+The model function is initiated here. The output is
 computed. Cost function and optimizer are defined.
 I am creating a prediction tensorarray which will 
 store the index of maximum element of 
 the output probability distributions.
 From that index I can find the word in vocab_limit
-which is represented by it.
+which is represented by it. So the final visible
+predictions will be the words that the model decides to
+be most probable.
 
 
 ```python
@@ -853,7 +860,7 @@ It's 'eos'.
 I trained it before without dynamically feeding the output_len.
 Ideally the network should determine the output_len by itself.
 
-Which is why I defined a MAX_LEN, and transformed target outputs in
+Which is why I defined (in past) a MAX_LEN, and transformed target outputs in
 the form "word1 word2 word3....eos <PAD> <PAD>....until max_length"
 I created the model output in the same way.
 
@@ -867,8 +874,8 @@ That way, we can have variable length output, with the length decided
 by the model itself, not the user.
 
 But all the padding and eos, makes the model coming in contact with 
-pads and eos in most of the target output, learns to consider eos and 
-pad to be important. Trying to fit the data, the early model starts to
+pads and eos in most of the target output. The model learns to consider eos and 
+pad to be important. Trying to fit to the data, the early model starts to
 spam eos and pad in its predicted output.
 
 That necessarily isn't a problem. The model may learn to fare better
@@ -877,7 +884,8 @@ and looking at predictions consisting of eos and pads
 isn't too interesting. I wanted to check what kind of words (other than
 eos and pads) the model learns to produce in the early iterations. 
 
-Which is why I am doing what I am doing.
+Which is why I am doing what I am doing. Ideally, my past implemention
+waould be better. 
 
 As I said before, I will run it for only a few early iterations.
 So, it's not likely to see any great predicted summaries here.
@@ -885,10 +893,9 @@ As can be seen, the summaries seem more influenced by previous
 output sample than the input context in these early iterations.
 
 Some of the texts contains undesirable words like br tags and so
-on. 
+on. So better preprocessing and tokenization may be desirable.
 
-With better tokenization, more data, more depth, 
-larger hidden size, mini-batch training,
+With more layer depth, larger hidden size, mini-batch training,
 and other changes, this model may have potential.
 
 The same arcitechture should be usable for training on translation data.
@@ -1551,15 +1558,8 @@ with tf.Session() as sess: # Start Tensorflow Session
     TEXT:
     i roast at home with a unk popcorn popper( but i do it outside, of course). these beans( coffee bean direct green mexican altura) seem to be well-suited for this method. the first and second cracks are distinct, and i 've roasted the beans from medium to slightly dark with great results every time. the aroma is strong and persistent. the taste is smooth, velvety, yet
 
+
 BLEU and ROUGE metrics can be implemented for scoring. Validation and testing can be easily implemented too, if needed.
 
 
 
-```python
-
-```
-
-
-```python
-
-```
