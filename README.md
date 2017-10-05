@@ -652,6 +652,9 @@ Note: y is of the same size as the no. of vocabs in vocab_limit. Y is supposed t
 a probability distribution. The value of index i of Y denotes the probability for Y 
 to be the word that is located in the index i of vacab_limit.
 
+('beam search' is another approach to look into, for not predicting simply the next word,
+but the next k words.)
+
 The first y is the input for the <b>decoder RNN</b>. In the context of the first y and 
 the initial hidden state the RNN produces the next decoder hidden state and the loop
 continues. 
