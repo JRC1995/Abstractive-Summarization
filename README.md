@@ -163,7 +163,7 @@ and pt is a position determined by the program.
 The range of pt-D to pt+D can be said to be the window where attention takes place.  Pt is the center of the
 window.
 
-I am treating D as a hyperparameter. The window size will be (pt-d)-(pt+d)+1 = 2D+1.
+I am treating D as a hyperparameter. The window size will be (pt-D)-(pt+D)+1 = 2D+1.
 
 Now, obviously, the window needs to be smaller than or equal to the no. of the encoded hidden states themselves.
 We will encode one hidden state for each words in the input text, so size of the hidden states will be equivalent
@@ -381,7 +381,7 @@ identity initialization (identity being orthonological) can still be a better in
 that random_normal or truncated_normal:
 https://smerity.com/articles/2016/orthogonal_init.html
 
-For activation, I am using elu (to try it out): https://arxiv.org/pdf/1511.07289.pdf
+For activation, I am using ELU (Exponential Linear Units): https://arxiv.org/pdf/1511.07289.pdf
 
 The identity initialization was supposed to be used with ReLu, however. But, at this point
 I am not intending to make a pure duplicate of IRNN. 
@@ -426,7 +426,7 @@ def forward_encoder(inp,hidden,hidden_residuals,Wxh,Whh,Wattention,B,seq_len,inp
         
 ```
 
-This the function for the backward encoder.
+This is the function for the backward encoder.
 It starts from the last word in the input sequence, and encodes
 a word in the context of the next word.
 
@@ -625,7 +625,7 @@ There are many means of combining them, like: concatenation, summation, average 
 I will be performing a weighted summation of h_forward and h_backward.
 
 Whf will denote the weight for h_forward.
-Using sigmoid I am limit the range of Whf in 0 to 1.
+Using sigmoid I am limiting the range of Whf in 0 to 1.
 
 I intend to keep 'weight given to h_forward' + 'weight given to h_backward' to be = 1
 (so that they can signify something like probabilities of two alternate possibilities)
@@ -668,7 +668,7 @@ of the current sample, and the decoder loops for the given 'output length' times
 
 NOTE: I am saving y without softmax in the tensorarray output. Why? Because
 I will be using tensorflow cost functions that requires the logits to be without
-softmax. 
+softmax (the function will internally apply Softmax).
 
 
 
@@ -876,14 +876,14 @@ the previous output y denotes an eos.
 That way, we can have variable length output, with the length decided
 by the model itself, not the user.
 
-But all the padding and eos, makes the model coming in contact with 
+But all the padding and eos, makes the model to come in contact with 
 pads and eos in most of the target output. The model learns to consider eos and 
 pad to be important. Trying to fit to the data, the early model starts to
 spam eos and pad in its predicted output.
 
 That necessarily isn't a problem. The model may learn to fare better
 later on, but I planned only to check a couple of early iterations, 
-and looking at predictions consisting of eos and pads
+and looking at predictions consisting of only eos and pads
 isn't too interesting. I wanted to check what kind of words (other than
 eos and pads) the model learns to produce in the early iterations. 
 
@@ -899,7 +899,7 @@ Some of the texts contains undesirable words like br tags and so
 on. So better preprocessing and tokenization may be desirable.
 
 With more layer depth, larger hidden size, mini-batch training,
-and other changes, this model may have potential.
+and other changes, this model may have potential, or may not.
 
 The same arcitechture should be usable for training on translation data.
 
