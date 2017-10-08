@@ -566,7 +566,9 @@ def score(hs,ht,Wa,seq_len):
     G = tf.reshape(G,[tf_seq_len,1])
     return G"""
 
-def align(hs,ht,Wp,Vp,Wa,tf_seq_len,pd):
+def align(hs,ht,Wp,Vp,Wa,tf_seq_len):
+     
+    pd = tf.TensorArray(size=(2*D+1),dtype=tf.float32)
    
     sequence_length = tf_seq_len-tf.constant((2*D+1),dtype=tf.int32)
     sequence_length = tf.cast(sequence_length,dtype=tf.float32)
@@ -592,10 +594,11 @@ def align(hs,ht,Wp,Vp,Wa,tf_seq_len,pd):
         comp_1 = tf.cast(tf.square(tf.cast(pos,tf.float32)-pt_float),tf.float32)
         comp_2 = tf.cast(2*tf.square(sigma),tf.float32)
             
-        pd[i].assign(tf.exp(-(comp_1/comp_2)))
+        pd.write(i,tf.exp(-(comp_1/comp_2)))
             
         return i+1,pos+1
-                      
+    pd = pd.stack()                  
+    
     i,pos = tf.while_loop(cond,body,[i,pos])
     
     local_hs = hs[(pt-D):(pt+D+1)]
@@ -703,7 +706,6 @@ def model(tf_text,tf_seq_len,tf_output_len):
     Wp = tf.Variable(tf.truncated_normal(shape=[hidden_size,50],stddev=0.01))
     Vp = tf.Variable(tf.truncated_normal(shape=[50,1],stddev=0.01))
     Wa = tf.Variable(tf.truncated_normal(shape=[hidden_size,hidden_size],stddev=0.01))
-    pd = tf.Variable(tf.zeros([2*D+1]),dtype=tf.float32,trainable=False) 
     Wc = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,hidden_size],stddev=0.01))
     
     #3 DECODER PARAMETERS
@@ -761,7 +763,7 @@ def model(tf_text,tf_seq_len,tf_output_len):
         
         #LOCAL ATTENTION
         
-        G,pt = align(encoded_hidden,decoded_hidden,Wp,Vp,Wa,tf_seq_len,pd)
+        G,pt = align(encoded_hidden,decoded_hidden,Wp,Vp,Wa,tf_seq_len)
         #G = align(encoded_hidden,decoded_hidden,Wa,tf_seq_len)
         local_encoded_hidden = encoded_hidden[pt-D:pt+D+1]
         weighted_encoded_hidden = tf.multiply(local_encoded_hidden,G)
