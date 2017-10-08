@@ -585,21 +585,22 @@ def align(hs,ht,Wp,Vp,Wa,tf_seq_len):
     i = 0
     pos = pt - D
     
-    def cond(i,pos):
+    def cond(i,pos,pd):
         
         return i < (2*D+1)
                       
-    def body(i,pos):
+    def body(i,pos,pd):
         
         comp_1 = tf.cast(tf.square(tf.cast(pos,tf.float32)-pt_float),tf.float32)
         comp_2 = tf.cast(2*tf.square(sigma),tf.float32)
             
-        pd.write(i,tf.exp(-(comp_1/comp_2)))
+        pd = pd.write(i,tf.exp(-(comp_1/comp_2)))
             
-        return i+1,pos+1
-    pd = pd.stack()                  
+        return i+1,pos+1,pd
+            
+    i,pos,pd = tf.while_loop(cond,body,[i,pos,pd])
     
-    i,pos = tf.while_loop(cond,body,[i,pos])
+    pd = pd.stack()  
     
     local_hs = hs[(pt-D):(pt+D+1)]
     
