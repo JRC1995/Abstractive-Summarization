@@ -376,7 +376,7 @@ The purpose for this is to created connections between hidden states of differen
 to establish long term dependencies.
 
 Note: Adding RRA may somewhat oppose the purpose behind identity initialization. But, anyway,
-identity initialization (identity being orthonological) can still be a better initialization
+identity initialization (identity being orthogonal) can still be a better initialization
 that random_normal or truncated_normal:
 https://smerity.com/articles/2016/orthogonal_init.html
 
