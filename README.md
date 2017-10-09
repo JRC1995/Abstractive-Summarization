@@ -315,12 +315,11 @@ to consider for residual connections. More on that later.
 ```python
 #Some MORE hyperparameters and other stuffs
 
-hidden_size = 300
+hidden_size = 250
 learning_rate = 0.003
 K = 5
 vocab_len = len(vocab_limit)
-training_iters = 1 #I am not going to 'really' train it.
-#EOS_index = vocab_limit.index('eos')
+training_iters = 1 
 ```
 
 Setting up tensorflow placeholders.
@@ -390,37 +389,48 @@ This is more of a mix mash of various ideas.
 
 
 ```python
-def forward_encoder(inp,hidden,hidden_residuals,Wxh,Whh,Wattention,B,seq_len,inp_dim):
-    
-    #hidden_residuals = tf.Variable(tf.zeros([K,hidden_size]),dtype=tf.float32,trainable=False)
+def forward_encoder(inp,hidden,Wxh,Whh,Wattention,B,seq_len,inp_dim):
+
     Wattention = tf.nn.softmax(Wattention,0)
     hidden_forward = tf.TensorArray(size=seq_len,dtype=tf.float32)
     
-    i=0
+    hidden_residuals = tf.TensorArray(size=K,dynamic_size=True,dtype=tf.float32,clear_after_read=False)
+    hidden_residuals = hidden_residuals.unstack(tf.zeros([K,hidden_size],dtype=tf.float32))
     
-    def cond(i,hidden,hidden_forward):
+    i=0
+    j=K
+    
+    def fn(hidden_residuals):
+        
+        return hidden_residuals
+    
+    def cond(i,j,hidden,hidden_forward,hidden_residuals):
         return i < seq_len
     
-    def body(i,hidden,hidden_forward):
+    def body(i,j,hidden,hidden_forward,hidden_residuals):
         
         x = tf.reshape(inp[i],[1,inp_dim])
         
-        RRA = tf.reduce_sum(tf.multiply(hidden_residuals,Wattention),0)
+        hidden_residuals_stack = hidden_residuals.stack()
+        
+        RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention),0)
         RRA = tf.reshape(RRA,[1,hidden_size])
         
         hidden_next = tf.nn.elu(tf.matmul(x,Wxh) + tf.matmul(hidden,Whh) + B + RRA)
         
         hidden = hidden_next
         
-        res_index = tf.mod(i,K)
-        
-        hidden_residuals[res_index].assign(tf.reshape(hidden,[hidden_size]))
-        
+        hidden_residuals = tf.cond(tf.equal(j,seq_len-1+K),
+                                   lambda: hidden_residuals,
+                                   lambda: hidden_residuals.write(j,tf.reshape(hidden,[hidden_size])))
+
         hidden_forward = hidden_forward.write(i,tf.reshape(hidden,[hidden_size]))
         
-        return i+1,hidden,hidden_forward
+        return i+1,j+1,hidden,hidden_forward,hidden_residuals
     
-    _,_,hidden_forward = tf.while_loop(cond,body,[i,hidden,hidden_forward])
+    _,_,_,hidden_forward,hidden_residuals = tf.while_loop(cond,body,[i,j,hidden,hidden_forward,hidden_residuals])
+    
+    hidden_residuals.close().mark_used()
     
     return hidden_forward.stack()
         
@@ -434,36 +444,42 @@ It similarly uses a RNN with RRA, identity initalization and elu.
 
 
 ```python
-def backward_encoder(inp,hidden,hidden_residuals,Wxh,Whh,Wattention,B,seq_len,inp_dim):
-    
-    #hidden_residuals = tf.Variable(tf.zeros([K,hidden_size]),dtype=tf.float32,trainable=False)
+def backward_encoder(inp,hidden,Wxh,Whh,Wattention,B,seq_len,inp_dim):
     Wattention = tf.nn.softmax(Wattention,0)
     hidden_backward = tf.TensorArray(size=seq_len,dtype=tf.float32)
     
-    i=seq_len-1
+    hidden_residuals = tf.TensorArray(size=K,dynamic_size=True,dtype=tf.float32,clear_after_read=False)
+    hidden_residuals = hidden_residuals.unstack(tf.zeros([K,hidden_size],dtype=tf.float32))
     
-    def cond(i,hidden,hidden_backward):
+    i=seq_len-1
+    j=K
+    
+    def cond(i,j,hidden,hidden_backward,hidden_residuals):
         return i > -1
     
-    def body(i,hidden,hidden_backward):
+    def body(i,j,hidden,hidden_backward,hidden_residuals):
         
         x = tf.reshape(inp[i],[1,inp_dim])
         
-        RRA = tf.reduce_sum(tf.multiply(hidden_residuals,Wattention),0)
+        hidden_residuals_stack = hidden_residuals.stack()
+        
+        RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention),0)
         RRA = tf.reshape(RRA,[1,hidden_size])
         
         hidden_next = tf.nn.elu(tf.matmul(x,Wxh) + tf.matmul(hidden,Whh) + B + RRA)
         
         hidden = hidden_next
+        hidden_residuals = tf.cond(tf.equal(j,seq_len-1+K),
+                                   lambda: hidden_residuals,
+                                   lambda: hidden_residuals.write(j,tf.reshape(hidden,[hidden_size])))
         
-        res_index = tf.mod(i,K)
-        
-        hidden_residuals[res_index].assign(tf.reshape(hidden,[hidden_size]))
         hidden_backward = hidden_backward.write(i,tf.reshape(hidden,[hidden_size]))
         
-        return i-1,hidden,hidden_backward
+        return i-1,j+1,hidden,hidden_backward,hidden_residuals
     
-    _,_,hidden_backward = tf.while_loop(cond,body,[i,hidden,hidden_backward])
+    _,_,_,hidden_backward,hidden_residuals = tf.while_loop(cond,body,[i,j,hidden,hidden_backward,hidden_residuals])
+
+    hidden_residuals.close().mark_used()
     
     return hidden_backward.stack()
         
@@ -475,7 +491,6 @@ It similarly uses a RNN with RRA, identity initalization and elu.
 
 ```python
 def decoder(inp,hidden,Wxh,Whh,B,RRA):
-    
     hidden_next = tf.nn.elu(tf.matmul(inp,Wxh) + tf.matmul(hidden,Whh) + B + RRA)
     
     return hidden_next
@@ -556,20 +571,12 @@ context vector.
 
 ```python
 def score(hs,ht,Wa,seq_len):
-    #hs = tf.reshape(hs,[seq_len,hidden_size])
     return tf.reshape(tf.matmul(tf.matmul(hs,Wa),tf.transpose(ht)),[seq_len])
 
-
-"""def align(hs,ht,Wa,tf_seq_len):
-    
-    G = tf.nn.softmax(score(hs,ht,Wa,tf_seq_len))
-    G = tf.reshape(G,[tf_seq_len,1])
-    return G"""
-
 def align(hs,ht,Wp,Vp,Wa,tf_seq_len):
-     
-    pd = tf.TensorArray(size=(2*D+1),dtype=tf.float32)
    
+    pd = tf.TensorArray(size=(2*D+1),dtype=tf.float32)
+    
     sequence_length = tf_seq_len-tf.constant((2*D+1),dtype=tf.int32)
     sequence_length = tf.cast(sequence_length,dtype=tf.float32)
     
@@ -597,14 +604,14 @@ def align(hs,ht,Wp,Vp,Wa,tf_seq_len):
         pd = pd.write(i,tf.exp(-(comp_1/comp_2)))
             
         return i+1,pos+1,pd
-            
+                      
     i,pos,pd = tf.while_loop(cond,body,[i,pos,pd])
-    
-    pd = pd.stack()  
     
     local_hs = hs[(pt-D):(pt+D+1)]
     
     normalized_scores = tf.nn.softmax(score(local_hs,ht,Wa,2*D+1))
+    
+    pd=pd.stack()
     
     G = tf.multiply(normalized_scores,pd)
     G = tf.reshape(G,[2*D+1,1])
@@ -626,18 +633,9 @@ the equivalents of h_forward and h_backward by some means.
 
 There are many means of combining them, like: concatenation, summation, average etc.
     
-I will be performing a weighted summation of h_forward and h_backward.
-
-Whf will denote the weight for h_forward.
-Using sigmoid I am limiting the range of Whf in 0 to 1.
-
-I intend to keep 'weight given to h_forward' + 'weight given to h_backward' to be = 1
-(so that they can signify something like probabilities of two alternate possibilities)
-
-Which is why I am using (1-Whf) as the weight for h_backward.
+I will be using concatenation.
 
 hidden_encoder is the final list of encoded hidden state
-
 
 Now, there is the question about initializing the decoder hidden state.
 I was a bit confused about it. In the end, I am using the first encoded_hidden_state 
@@ -678,16 +676,16 @@ softmax (the function will internally apply Softmax).
 
 ```python
 def model(tf_text,tf_seq_len,tf_output_len):
+    
     #PARAMETERS
     
     #1. GENERAL ENCODER PARAMETERS
     
-    Whf = tf.Variable(tf.truncated_normal(shape=[],stddev=0.01))
+    #Whf = tf.Variable(tf.truncated_normal(shape=[],stddev=0.01))
     
     #1.1 FORWARD ENCODER PARAMETERS
     
     initial_hidden_f = tf.zeros([1,hidden_size],dtype=tf.float32)
-    hidden_residuals_f = tf.Variable(tf.zeros([K,hidden_size]),dtype=tf.float32,trainable=False)
     Wxh_f = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
     Whh_f = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
     B_f = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
@@ -696,7 +694,6 @@ def model(tf_text,tf_seq_len,tf_output_len):
     #1.2 BACKWARD ENCODER PARAMETERS
     
     initial_hidden_b = tf.zeros([1,hidden_size],dtype=tf.float32)
-    hidden_residuals_b = tf.Variable(tf.zeros([K,hidden_size]),dtype=tf.float32,trainable=False)
     Wxh_b = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
     Whh_b = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
     B_b = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
@@ -704,20 +701,22 @@ def model(tf_text,tf_seq_len,tf_output_len):
     
     #2 ATTENTION PARAMETERS
     
-    Wp = tf.Variable(tf.truncated_normal(shape=[hidden_size,50],stddev=0.01))
+    Wp = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,50],stddev=0.01))
     Vp = tf.Variable(tf.truncated_normal(shape=[50,1],stddev=0.01))
-    Wa = tf.Variable(tf.truncated_normal(shape=[hidden_size,hidden_size],stddev=0.01))
-    Wc = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,hidden_size],stddev=0.01))
+    Wa = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,2*hidden_size],stddev=0.01))
+    Wc = tf.Variable(tf.truncated_normal(shape=[4*hidden_size,2*hidden_size],stddev=0.01))
     
     #3 DECODER PARAMETERS
     
-    Ws = tf.Variable(tf.truncated_normal(shape=[hidden_size,vocab_len],stddev=0.01))
+    Ws = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,vocab_len],stddev=0.01))
     
-    Wxh_d = tf.Variable(tf.truncated_normal(shape=[vocab_len,hidden_size],stddev=0.01))
-    Whh_d = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    B_d = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
+    Wxh_d = tf.Variable(tf.truncated_normal(shape=[vocab_len,2*hidden_size],stddev=0.01))
+    Whh_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
+    B_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
     
-    hidden_residuals_d = tf.Variable(tf.zeros([K,hidden_size]),dtype=tf.float32,trainable=False)
+    hidden_residuals = tf.TensorArray(size=K,dynamic_size=True,dtype=tf.float32,clear_after_read=False)
+    hidden_residuals = hidden_residuals.unstack(tf.zeros([K,2*hidden_size],dtype=tf.float32))
+    
     Wattention_d = tf.Variable(tf.zeros([K,1]),dtype=tf.float32)
     
     output = tf.TensorArray(size=tf_output_len,dtype=tf.float32)
@@ -726,51 +725,43 @@ def model(tf_text,tf_seq_len,tf_output_len):
                                
     hidden_forward = forward_encoder(tf_text,
                                      initial_hidden_f,
-                                     hidden_residuals_f,
                                      Wxh_f,Whh_f,Wattention_f,B_f,
                                      tf_seq_len,
                                      word_vec_dim)
     
     hidden_backward = backward_encoder(tf_text,
                                        initial_hidden_b,
-                                       hidden_residuals_b,
                                        Wxh_b,Whh_b,Wattention_b,B_b,
                                        tf_seq_len,
                                        word_vec_dim)
-                               
-                               
-    #encoded_hidden = (hidden_forward)#+hidden_backward)/2
     
-    Whf = tf.nn.sigmoid(Whf)
+    #Whf = tf.nn.sigmoid(Whf)
     
-    encoded_hidden = tf.multiply(hidden_forward,Whf) + tf.multiply(hidden_backward,(1-Whf))
+    #encoded_hidden = tf.multiply(hidden_forward,Whf) + tf.multiply(hidden_backward,(1-Whf))
+    
+    encoded_hidden = tf.concat([hidden_forward,hidden_backward],1)
     
     #ATTENTION MECHANISM AND DECODER
     
     decoded_hidden = encoded_hidden[0]
-    decoded_hidden = tf.reshape(decoded_hidden,[1,hidden_size])
+    decoded_hidden = tf.reshape(decoded_hidden,[1,2*hidden_size])
+    Wattention_d_normalized = tf.nn.softmax(Wattention_d)
                                
     i=0
+    j=K
     
-    def attention_decoder_cond(i,decoded_hidden,output):
-        
-        #cond1 = i < MAX_LEN 
-        #cond2 = tf.reduce_all(tf.not_equal(tf.argmax(y),EOS_index))
-        #stacked_conds = tf.stack([cond1,cond2])
-        #return i < MAX_LEN #tf.reduce_all(stacked_conds)
+    def attention_decoder_cond(i,j,decoded_hidden,hidden_residuals,output):
         return i < tf_output_len
     
-    def attention_decoder_body(i,decoded_hidden,output):
+    def attention_decoder_body(i,j,decoded_hidden,hidden_residuals,output):
         
         #LOCAL ATTENTION
         
         G,pt = align(encoded_hidden,decoded_hidden,Wp,Vp,Wa,tf_seq_len)
-        #G = align(encoded_hidden,decoded_hidden,Wa,tf_seq_len)
         local_encoded_hidden = encoded_hidden[pt-D:pt+D+1]
         weighted_encoded_hidden = tf.multiply(local_encoded_hidden,G)
-        #weighted_encoded_hidden = tf.multiply(encoded_hidden,G)
         context_vector = tf.reduce_sum(weighted_encoded_hidden,0)
-        context_vector = tf.reshape(context_vector,[1,hidden_size])
+        context_vector = tf.reshape(context_vector,[1,2*hidden_size])
         
         attended_hidden = tf.tanh(tf.matmul(tf.concat([context_vector,decoded_hidden],1),Wc))
         
@@ -782,38 +773,23 @@ def model(tf_text,tf_seq_len,tf_output_len):
         
         y = tf.nn.softmax(y)
         
-        Wattention_d_normalized = tf.nn.softmax(Wattention_d)
-        RRA = tf.reduce_sum(tf.multiply(hidden_residuals_d,Wattention_d_normalized),0)
-        RRA = tf.reshape(RRA,[1,hidden_size])
+        hidden_residuals_stack = hidden_residuals.stack()
+        
+        RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention_d_normalized),0)
+        RRA = tf.reshape(RRA,[1,2*hidden_size])
         
         decoded_hidden_next = decoder(y,attended_hidden,Wxh_d,Whh_d,B_d,RRA)
         
         decoded_hidden = decoded_hidden_next
+
+        hidden_residuals = hidden_residuals.write(j,tf.reshape(decoded_hidden,[2*hidden_size]))
         
-        res_index = tf.mod(i,K)
-        
-        hidden_residuals_d[res_index].assign(tf.reshape(decoded_hidden,[hidden_size]))
-        
-        return i+1,decoded_hidden,output
+        return i+1,j+1,decoded_hidden,hidden_residuals,output
     
-    i,decoded_hidden,output = tf.while_loop(attention_decoder_cond,
+    i,j,decoded_hidden,hidden_residuals,output = tf.while_loop(attention_decoder_cond,
                                             attention_decoder_body,
-                                            [i,decoded_hidden,output])
-    
-    #PAD OUTPUT IF NEEDED 
-    
-    """
-    i = unpadded_len
-    
-    PAD = np.zeros([vocab_len])
-    PAD[int(vocab_limit.index('<PAD>'))] = 1
-    
-    def pad_cond(i,output):
-        return i < MAX_LEN
-    def pad_body(i,output):
-        output = output.write(i,tf.convert_to_tensor(PAD))
-        return i+1,output
-    i,output = tf.while_loop(pad_cond,pad_body,[i,output])"""
+                                            [i,j,decoded_hidden,hidden_residuals,output])
+    hidden_residuals.close().mark_used()
     
     output = output.stack()
     
@@ -999,7 +975,7 @@ with tf.Session() as sess: # Start Tensorflow Session
 ```
 
     
-    Iteration: 0
+   Iteration: 0
     Training input sequence length: 51
     Training target outputs sequence length: 4
     
@@ -1009,13 +985,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    trichoderma porch passionfruit earliest
+    nor milks milks originating
     
     ACTUAL SUMMARY:
     
     good quality dog food
     
-    loss=10.3848
+    loss=10.622
     
     Iteration: 1
     Training input sequence length: 37
@@ -1027,13 +1003,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    good good good
+    division winn dog
     
     ACTUAL SUMMARY:
     
     not as advertised
     
-    loss=10.3954
+    loss=10.4359
     
     Iteration: 2
     Training input sequence length: 46
@@ -1045,13 +1021,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not as
+    good 3:00
     
     ACTUAL SUMMARY:
     
     cough medicine
     
-    loss=10.3193
+    loss=10.4655
     
     Iteration: 3
     Training input sequence length: 32
@@ -1063,13 +1039,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not medicine
+    good as
     
     ACTUAL SUMMARY:
     
     great taffy
     
-    loss=10.4169
+    loss=10.5359
     
     Iteration: 4
     Training input sequence length: 30
@@ -1081,13 +1057,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not medicine not as
+    cough medicine medicine medicine
     
     ACTUAL SUMMARY:
     
     wonderful, tasty taffy
     
-    loss=10.2921
+    loss=10.049
     
     Iteration: 5
     Training input sequence length: 29
@@ -1099,13 +1075,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not medicine
+    cough medicine
     
     ACTUAL SUMMARY:
     
     yay barley
     
-    loss=10.4698
+    loss=10.4939
     
     Iteration: 6
     Training input sequence length: 29
@@ -1117,13 +1093,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not taffy not
+    cough medicine medicine
     
     ACTUAL SUMMARY:
     
     healthy dog food
     
-    loss=9.98087
+    loss=9.12638
     
     Iteration: 7
     Training input sequence length: 24
@@ -1135,13 +1111,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not taffy not not
+    cough medicine medicine medicine
     
     ACTUAL SUMMARY:
     
     strawberry twizzlers- yummy
     
-    loss=10.3787
+    loss=10.2866
     
     Iteration: 8
     Training input sequence length: 45
@@ -1159,7 +1135,7 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     poor taste
     
-    loss=10.5665
+    loss=10.3284
     
     Iteration: 9
     Training input sequence length: 28
@@ -1171,13 +1147,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    cough taffy not
+    cough taffy taffy
     
     ACTUAL SUMMARY:
     
     love it!
     
-    loss=10.3583
+    loss=10.4985
     
     Iteration: 10
     Training input sequence length: 31
@@ -1189,13 +1165,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    cough not not
+    cough taffy taffy
     
     ACTUAL SUMMARY:
     
     home delivered unk
     
-    loss=10.5083
+    loss=10.5958
     
     Iteration: 11
     Training input sequence length: 52
@@ -1207,13 +1183,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    cough dog
+    cough taffy
     
     ACTUAL SUMMARY:
     
     always fresh
     
-    loss=10.7771
+    loss=10.6754
     
     Iteration: 12
     Training input sequence length: 68
@@ -1231,7 +1207,7 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     twizzlers
     
-    loss=7.08583
+    loss=9.49611
     
     Iteration: 13
     Training input sequence length: 31
@@ -1243,13 +1219,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    cough dog not
+    cough taffy taffy
     
     ACTUAL SUMMARY:
     
     delicious product!
     
-    loss=9.58115
+    loss=9.60363
     
     Iteration: 14
     Training input sequence length: 21
@@ -1267,302 +1243,15 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     twizzlers
     
-    loss=5.62629
+    loss=7.11544
     
     Iteration: 15
     Training input sequence length: 72
     Training target outputs sequence length: 7
     
     TEXT:
-    i have lived out of the us for over 7 yrs now, and i so miss my twizzlers!! when i go back to visit or someone visits me, i always stock up. all i can say is yum!< br/> sell these in mexico and you will have a faithful buyer, more often than i 'm able to buy them right now.
-    
-    
-    PREDICTED SUMMARY:
-    
-    cough dog not dog not not not
-    
-    ACTUAL SUMMARY:
-    
-    please sell these in mexico!!
-    
-    loss=9.6351
-    
-    Iteration: 16
-    Training input sequence length: 36
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    product received is as unk< br/>< br/>< a unk '' http: unk ''> twizzlers, strawberry, 16-ounce bags( pack of 6)< unk>
-    
-    
-    PREDICTED SUMMARY:
-    
-    cough dog not
-    
-    ACTUAL SUMMARY:
-    
-    twizzlers- strawberry
-    
-    loss=4.39634
-    
-    Iteration: 17
-    Training input sequence length: 43
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    i was so glad amazon carried these batteries. i have a hard time finding them elsewhere because they are such a unique size. i need them for my garage door unk< br/> great deal for the price.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great dog not dog not
-    
-    ACTUAL SUMMARY:
-    
-    great bargain for the price
-    
-    loss=9.61301
-    
-    Iteration: 18
-    Training input sequence length: 26
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    this offer is a great price and a great taste, thanks amazon for selling this unk< br/>< br/> unk
-    
-    
-    PREDICTED SUMMARY:
-    
-    great dog great dog great
-    
-    ACTUAL SUMMARY:
-    
-    this is my taste ...
-    
-    loss=10.5376
-    
-    Iteration: 19
-    Training input sequence length: 60
-    Training target outputs sequence length: 7
-    
-    TEXT:
-    for those of us with celiac disease this product is a lifesaver and what could be better than getting it at almost half the price of the grocery or health food store! i love mccann 's instant oatmeal- all flavors!!!< br/>< br/> thanks,< br/> abby
-    
-    
-    PREDICTED SUMMARY:
-    
-    great dog twizzlers twizzlers twizzlers twizzlers twizzlers
-    
-    ACTUAL SUMMARY:
-    
-    love gluten free oatmeal!!!
-    
-    loss=6.87489
-    
-    Iteration: 20
-    Training input sequence length: 59
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    what else do you need to know? oatmeal, instant( make it with a half cup of low-fat milk and add raisins; nuke for 90 seconds). more expensive than kroger store brand oatmeal and maybe a little tastier or better texture or something. it 's still just oatmeal. mmm, convenient!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great twizzlers!
-    
-    ACTUAL SUMMARY:
-    
-    it 's oatmeal
-    
-    loss=9.58958
-    
-    Iteration: 21
-    Training input sequence length: 79
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    i ordered this for my wife as it was unk by our daughter. she has this almost every morning and likes all flavors. she 's happy, i 'm happy!!!< br/>< a unk '' http: unk ''> mccann 's instant irish oatmeal, variety pack of regular, apples& cinnamon, and maple& brown sugar, 10-count boxes( pack of 6)< unk>
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!!
-    
-    ACTUAL SUMMARY:
-    
-    wife 's favorite breakfast
-    
-    loss=12.1607
-    
-    Iteration: 22
-    Training input sequence length: 38
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    i have mccann 's oatmeal every morning and by ordering it from amazon i am able to save almost$ 3.00 per unk< br/> it is a great product. tastes great and very healthy
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers
-    
-    ACTUAL SUMMARY:
-    
-    unk
-    
-    loss=5.78252
-    
-    Iteration: 23
-    Training input sequence length: 41
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    mccann 's oatmeal is a good quality choice. our favorite is the apples and cinnamon, but we find that none of these are overly sugary. for a good hot breakfast in 2 minutes, this is excellent.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!
-    
-    ACTUAL SUMMARY:
-    
-    good hot breakfast
-    
-    loss=9.91325
-    
-    Iteration: 24
-    Training input sequence length: 55
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    we really like the mccann 's steel cut oats but find we do n't cook it up too unk< br/> this tastes much better to me than the grocery store brands and is just as unk< br/> anything that keeps me eating oatmeal regularly is a good thing.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!!
-    
-    ACTUAL SUMMARY:
-    
-    great taste and convenience
-    
-    loss=6.58047
-    
-    Iteration: 25
-    Training input sequence length: 46
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    this seems a little more wholesome than some of the supermarket brands, but it is somewhat mushy and does n't have quite as much flavor either. it did n't pass muster with my kids, so i probably wo n't buy it again.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!
-    
-    ACTUAL SUMMARY:
-    
-    hearty oatmeal
-    
-    loss=11.1528
-    
-    Iteration: 26
-    Training input sequence length: 52
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    good oatmeal. i like the apple cinnamon the best. though i would n't follow the directions on the package since it always comes out too soupy for my taste. that could just be me since i like my oatmeal really thick to add some milk on top of.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers
-    
-    ACTUAL SUMMARY:
-    
-    good
-    
-    loss=6.67446
-    
-    Iteration: 27
-    Training input sequence length: 25
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    the flavors are good. however, i do not see any unk between this and unk oats brand- they are both mushy.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers
-    
-    ACTUAL SUMMARY:
-    
-    mushy
-    
-    loss=14.9881
-    
-    Iteration: 28
-    Training input sequence length: 41
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    this is the same stuff you can buy at the big box stores. there is nothing healthy about it. it is just carbs and sugars. save your money and get something that at least has some taste.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers taste
-    
-    ACTUAL SUMMARY:
-    
-    same stuff
-    
-    loss=12.9901
-    
-    Iteration: 29
-    Training input sequence length: 25
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    this oatmeal is not good. its mushy, soft, i do n't like it. quaker oats is the way to go.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers taste battles 40th
-    
-    ACTUAL SUMMARY:
-    
-    do n't like it
-    
-    loss=13.1568
-    
-    Iteration: 30
-    Training input sequence length: 37
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    we 're used to spicy foods down here in south texas and these are not at all spicy. doubt very much habanero is used at all. could take it up a notch or two.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers taste steambath
-    
-    ACTUAL SUMMARY:
-    
-    not ass kickin
-    
-    loss=8.96729
-    
-    Iteration: 31
-    Training input sequence length: 80
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    i roast at home with a unk popcorn popper( but i do it outside, of course). these beans( coffee bean direct green mexican altura) seem to be well-suited for this method. the first and second cracks are distinct, and i 've roasted the beans from medium to slightly dark with great results every time. the aroma is strong and persistent. the taste is smooth, velvety, yet
+    i have lived out of the us for over 7 yrs now, and i so miss my twizzlers!! when i go back to visit or someone visits me, i always stock up. all i can say is yum!< br/> sell these in mexico and you will have a faithful
+
 
 
 BLEU and ROUGE metrics can be implemented for scoring. Validation and testing can be easily implemented too, if needed.
