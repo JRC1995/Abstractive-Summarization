@@ -196,7 +196,7 @@ print "Percentage of dataset with summary length beyond "+str(LEN)+": "+str((cou
 
 count = 0
 
-D = 10 #careful not so big that the window becomes bigger than the text
+D = 10 
 
 window_size = 2*D+1
 
@@ -399,10 +399,6 @@ def forward_encoder(inp,hidden,Wxh,Whh,Wattention,B,seq_len,inp_dim):
     
     i=0
     j=K
-    
-    def fn(hidden_residuals):
-        
-        return hidden_residuals
     
     def cond(i,j,hidden,hidden_forward,hidden_residuals):
         return i < seq_len
@@ -679,10 +675,6 @@ def model(tf_text,tf_seq_len,tf_output_len):
     
     #PARAMETERS
     
-    #1. GENERAL ENCODER PARAMETERS
-    
-    #Whf = tf.Variable(tf.truncated_normal(shape=[],stddev=0.01))
-    
     #1.1 FORWARD ENCODER PARAMETERS
     
     initial_hidden_f = tf.zeros([1,hidden_size],dtype=tf.float32)
@@ -735,10 +727,6 @@ def model(tf_text,tf_seq_len,tf_output_len):
                                        tf_seq_len,
                                        word_vec_dim)
     
-    #Whf = tf.nn.sigmoid(Whf)
-    
-    #encoded_hidden = tf.multiply(hidden_forward,Whf) + tf.multiply(hidden_backward,(1-Whf))
-    
     encoded_hidden = tf.concat([hidden_forward,hidden_backward],1)
     
     #ATTENTION MECHANISM AND DECODER
@@ -782,7 +770,9 @@ def model(tf_text,tf_seq_len,tf_output_len):
         
         decoded_hidden = decoded_hidden_next
 
-        hidden_residuals = hidden_residuals.write(j,tf.reshape(decoded_hidden,[2*hidden_size]))
+        hidden_residuals = tf.cond(tf.equal(j,tf_output_len-1+K),
+                                   lambda: hidden_residuals,
+                                   lambda: hidden_residuals.write(j,tf.reshape(decoded_hidden,[2*hidden_size])))
         
         return i+1,j+1,decoded_hidden,hidden_residuals,output
     
