@@ -481,6 +481,7 @@ def backward_encoder(inp,hidden,Wxh,Whh,Wattention,B,seq_len,inp_dim):
         
 ```
 
+
 Pretty self explanatory - this is the function for the decoder.
 It similarly uses a RNN with RRA, identity initalization and elu.  
 
@@ -615,7 +616,6 @@ def align(hs,ht,Wp,Vp,Wa,tf_seq_len):
     return G,pt
 
 ```
-
 This is the model definition.
 
 First is the <b>bi-directional encoder</b>.
@@ -675,6 +675,10 @@ def model(tf_text,tf_seq_len,tf_output_len):
     
     #PARAMETERS
     
+    #1. GENERAL ENCODER PARAMETERS
+    
+    #Whf = tf.Variable(tf.truncated_normal(shape=[],stddev=0.01))
+    
     #1.1 FORWARD ENCODER PARAMETERS
     
     initial_hidden_f = tf.zeros([1,hidden_size],dtype=tf.float32)
@@ -727,6 +731,10 @@ def model(tf_text,tf_seq_len,tf_output_len):
                                        tf_seq_len,
                                        word_vec_dim)
     
+    #Whf = tf.nn.sigmoid(Whf)
+    
+    #encoded_hidden = tf.multiply(hidden_forward,Whf) + tf.multiply(hidden_backward,(1-Whf))
+    
     encoded_hidden = tf.concat([hidden_forward,hidden_backward],1)
     
     #ATTENTION MECHANISM AND DECODER
@@ -770,9 +778,7 @@ def model(tf_text,tf_seq_len,tf_output_len):
         
         decoded_hidden = decoded_hidden_next
 
-        hidden_residuals = tf.cond(tf.equal(j,tf_output_len-1+K),
-                                   lambda: hidden_residuals,
-                                   lambda: hidden_residuals.write(j,tf.reshape(decoded_hidden,[2*hidden_size])))
+        hidden_residuals = hidden_residuals.write(j,tf.reshape(decoded_hidden,[2*hidden_size]))
         
         return i+1,j+1,decoded_hidden,hidden_residuals,output
     
@@ -785,6 +791,7 @@ def model(tf_text,tf_seq_len,tf_output_len):
     
     return output
 ```
+
 
 The model function is initiated here. The output is
 computed. Cost function and optimizer are defined.
@@ -965,7 +972,7 @@ with tf.Session() as sess: # Start Tensorflow Session
 ```
 
     
-   Iteration: 0
+    Iteration: 0
     Training input sequence length: 51
     Training target outputs sequence length: 4
     
@@ -1243,6 +1250,9 @@ with tf.Session() as sess: # Start Tensorflow Session
     i have lived out of the us for over 7 yrs now, and i so miss my twizzlers!! when i go back to visit or someone visits me, i always stock up. all i can say is yum!< br/> sell these in mexico and you will have a faithful
 
 
+```python
+
+```
 
 BLEU and ROUGE metrics can be implemented for scoring. Validation and testing can be easily implemented too, if needed.
 
