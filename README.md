@@ -1250,10 +1250,6 @@ with tf.Session() as sess: # Start Tensorflow Session
     i have lived out of the us for over 7 yrs now, and i so miss my twizzlers!! when i go back to visit or someone visits me, i always stock up. all i can say is yum!< br/> sell these in mexico and you will have a faithful
 
 
-```python
-
-```
-
 BLEU and ROUGE metrics can be implemented for scoring. Validation and testing can be easily implemented too, if needed.
 
 
