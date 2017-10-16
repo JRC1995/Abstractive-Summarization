@@ -1251,6 +1251,7 @@ with tf.Session() as sess: # Start Tensorflow Session
 
 
 BLEU and ROUGE metrics can be implemented for scoring. Validation and testing can be easily implemented too, if needed.
+Due to various reasons, I didn't plan to completely train the model (yet), which is why I haven't implemented testing, validation or any evaluation metrics either. 
 
 
 
