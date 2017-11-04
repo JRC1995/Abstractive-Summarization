@@ -153,7 +153,7 @@ Note: I am comparing len(summary_vec)-1, instead of len(summary_vec). The reason
 the last word vector which is the representation of the 'eos' marker. I will explain why later on this
 notebook. 
 
-<b>REMOVING DATA WITH ITS TEXTS WHOSE LENGTH IS SMALLER THAN THE WINDOW SIZE</b>
+<b>REMOVING DATA WITH TEXTS WHOSE LENGTH IS SMALLER THAN THE WINDOW SIZE</b>
 
 In this model I will try to implement <b>local attention</b> with standard encoder-decoder architecture.
 
