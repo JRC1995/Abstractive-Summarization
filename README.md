@@ -124,7 +124,15 @@ with open ('embd_limit', 'rb') as fp:
     embd_limit = pickle.load(fp)
     
 ```
+Creating a one hot encoded vector to represent <SOS> - the starting token or the initial decoded input.
 
+```
+vocab_limit.append('<SOS>')
+
+SOS_prob_dist = np.zeros((len(vocab_limit)),dtype=np.float32)
+SOS_prob_dist[vocab_limit.index('<SOS>')]=1
+
+```
 Here I am planning to reduce the size of the datasets, and remove some data that can be troublesome.
 
 <b>REMOVING DATA WITH SUMMARIES WHICH ARE TOO LONG</b>
@@ -633,18 +641,26 @@ I will be using concatenation.
 
 hidden_encoder is the final list of encoded hidden state
 
-Now, there is the question about initializing the decoder hidden state.
-I was a bit confused about it. In the end, I am using the first encoded_hidden_state 
+The first decoder input is the probability distribution with 1 at the index of <SOS>,
+in other words, one hot encoded representation of <SOS> - which signifies the start of
+decoding.
+
+I am using the first encoded_hidden_state 
 as the initial decoder state. The first encoded_hidden_state may have the least 
 past context (none actually) but, it will have the most future context.
 
-Next the <b>attention function</b> is called, to compute the G score.
+The next decoder hidden state is generated from the initial decoder input and the initial decoder state.
+Next, I start a loop which iterates for output_len times. 
+
+Next the <b>attention function</b> is called, to compute the G score by scoring the encoder hidden states
+in term of current decoder hidden step.
+
 The context vector is created by the weight (weighted in terms of G scores) summation
 of hidden states in the local attention window.
 
 I used the formulas mentioned here: https://nlp.stanford.edu/pubs/emnlp15_attn.pdf
 
-to calculate the first y (output) from the context vector and decoder hidden state.
+to calculate the first actual (not the <SOS> one) y (output) from the context vector and decoder hidden state.
 
 Note: y is of the same size as the no. of vocabs in vocab_limit. Y is supposed to be 
 a probability distribution. The value of index i of Y denotes the probability for Y 
@@ -653,13 +669,9 @@ to be the word that is located in the index i of vacab_limit.
 ('beam search' is another approach to look into, for not predicting simply the next word,
 but the next k words.)
 
-The first y is the input for the <b>decoder RNN</b>. In the context of the first y and 
-the initial hidden state the RNN produces the next decoder hidden state and the loop
+This y will be the input for the <b>decoder RNN</b>. In the context of this y and 
+the current decoder hidden state, the RNN produces the next decoder hidden state. The loop
 continues. 
-
-Here, I used the attended_hidden_state as the initial hidden state for the
-decoder RNN. Though I have some confusion about this, it seemed to produce 
-results with better variety.
 
 Since I will be training sample to sample, I can dynamically send the output length 
 of the current sample, and the decoder loops for the given 'output length' times.
@@ -674,10 +686,6 @@ softmax (the function will internally apply Softmax).
 def model(tf_text,tf_seq_len,tf_output_len):
     
     #PARAMETERS
-    
-    #1. GENERAL ENCODER PARAMETERS
-    
-    #Whf = tf.Variable(tf.truncated_normal(shape=[],stddev=0.01))
     
     #1.1 FORWARD ENCODER PARAMETERS
     
@@ -710,8 +718,8 @@ def model(tf_text,tf_seq_len,tf_output_len):
     Whh_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
     B_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
     
-    hidden_residuals = tf.TensorArray(size=K,dynamic_size=True,dtype=tf.float32,clear_after_read=False)
-    hidden_residuals = hidden_residuals.unstack(tf.zeros([K,2*hidden_size],dtype=tf.float32))
+    hidden_residuals_d = tf.TensorArray(size=K,dynamic_size=True,dtype=tf.float32,clear_after_read=False)
+    hidden_residuals_d = hidden_residuals_d.unstack(tf.zeros([K,2*hidden_size],dtype=tf.float32))
     
     Wattention_d = tf.Variable(tf.zeros([K,1]),dtype=tf.float32)
     
@@ -731,10 +739,6 @@ def model(tf_text,tf_seq_len,tf_output_len):
                                        tf_seq_len,
                                        word_vec_dim)
     
-    #Whf = tf.nn.sigmoid(Whf)
-    
-    #encoded_hidden = tf.multiply(hidden_forward,Whf) + tf.multiply(hidden_backward,(1-Whf))
-    
     encoded_hidden = tf.concat([hidden_forward,hidden_backward],1)
     
     #ATTENTION MECHANISM AND DECODER
@@ -742,14 +746,30 @@ def model(tf_text,tf_seq_len,tf_output_len):
     decoded_hidden = encoded_hidden[0]
     decoded_hidden = tf.reshape(decoded_hidden,[1,2*hidden_size])
     Wattention_d_normalized = tf.nn.softmax(Wattention_d)
-                               
-    i=0
+    
+    y = tf.convert_to_tensor(SOS_prob_dist) #inital output <SOS>
+    y = tf.reshape(y,[1,-1])
+    
     j=K
     
-    def attention_decoder_cond(i,j,decoded_hidden,hidden_residuals,output):
+    hidden_residuals_stack = hidden_residuals_d.stack()
+    
+    RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention_d_normalized),0)
+    RRA = tf.reshape(RRA,[1,2*hidden_size])
+    
+    decoded_hidden_next = decoder(y,decoded_hidden,Wxh_d,Whh_d,B_d,RRA)
+    decoded_hidden = decoded_hidden_next
+    
+    hidden_residuals_d = hidden_residuals_d.write(j,tf.reshape(decoded_hidden,[2*hidden_size]))
+    
+    j=j+1
+                           
+    i=0
+    
+    def attention_decoder_cond(i,j,decoded_hidden,hidden_residuals_d,output):
         return i < tf_output_len
     
-    def attention_decoder_body(i,j,decoded_hidden,hidden_residuals,output):
+    def attention_decoder_body(i,j,decoded_hidden,hidden_residuals_d,output):
         
         #LOCAL ATTENTION
         
@@ -769,23 +789,25 @@ def model(tf_text,tf_seq_len,tf_output_len):
         
         y = tf.nn.softmax(y)
         
-        hidden_residuals_stack = hidden_residuals.stack()
+        hidden_residuals_stack = hidden_residuals_d.stack()
         
         RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention_d_normalized),0)
         RRA = tf.reshape(RRA,[1,2*hidden_size])
         
-        decoded_hidden_next = decoder(y,attended_hidden,Wxh_d,Whh_d,B_d,RRA)
+        decoded_hidden_next = decoder(y,decoded_hidden,Wxh_d,Whh_d,B_d,RRA)
         
         decoded_hidden = decoded_hidden_next
-
-        hidden_residuals = hidden_residuals.write(j,tf.reshape(decoded_hidden,[2*hidden_size]))
         
-        return i+1,j+1,decoded_hidden,hidden_residuals,output
+        hidden_residuals_d = tf.cond(tf.equal(j,tf_output_len-1+K+1), #(+1 for <SOS>)
+                                   lambda: hidden_residuals_d,
+                                   lambda: hidden_residuals_d.write(j,tf.reshape(decoded_hidden,[2*hidden_size])))
+        
+        return i+1,j+1,decoded_hidden,hidden_residuals_d,output
     
-    i,j,decoded_hidden,hidden_residuals,output = tf.while_loop(attention_decoder_cond,
+    i,j,decoded_hidden,hidden_residuals_d,output = tf.while_loop(attention_decoder_cond,
                                             attention_decoder_body,
-                                            [i,j,decoded_hidden,hidden_residuals,output])
-    hidden_residuals.close().mark_used()
+                                            [i,j,decoded_hidden,hidden_residuals_d,output])
+    hidden_residuals_d.close().mark_used()
     
     output = output.stack()
     
