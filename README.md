@@ -1333,3 +1333,7 @@ with tf.Session() as sess: # Start Tensorflow Session
 * Train for different tasks (eg. Translation) using different datasets.
 * Intra-layer attention for both encoder and decoder together with everything else.
 * Adopt a more object oriented approach
+* Regularization
+* Validation
+* Testing
+* Implement Evaluation Metrics (ROUGE\BLEU\Something else)
