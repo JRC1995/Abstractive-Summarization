@@ -126,14 +126,17 @@ with open ('embd_limit', 'rb') as fp:
     
 ```
 
-Creating a one hot encoded vector to represent <SOS> which will represent the starting token for the decoder or the initial decoded input.
+Including SOS and its vector to the vocbularies. I forgot to do this while pre-processing.
+SOS signifies start of the decoder token input. 
 
 
 ```python
 vocab_limit.append('<SOS>')
+embd_limit.append(np.zeros((word_vec_dim),dtype=np.float32))
 
-SOS_prob_dist = np.zeros((len(vocab_limit)),dtype=np.float32)
-SOS_prob_dist[vocab_limit.index('<SOS>')]=1
+SOS = embd_limit[vocab_limit.index('<SOS>')]
+
+np_embd_limit = np.asarray(embd_limit,dtype=np.float32)
 
 ```
 
@@ -324,8 +327,8 @@ to consider for residual connections. More on that later.
 ```python
 #Some MORE hyperparameters and other stuffs
 
-hidden_size = 250
-learning_rate = 0.001
+hidden_size = 500
+learning_rate = 0.003
 K = 5
 vocab_len = len(vocab_limit)
 training_iters = 5 
@@ -645,9 +648,7 @@ I will be using concatenation.
 
 hidden_encoder is the final list of encoded hidden state
 
-The first decoder input is the probability distribution with 1 at the index of <SOS>,
-in other words, one hot encoded representation of <SOS> - which signifies the start of
-decoding.
+The first decoder input is the word vector representation of <SOS> which siginfies the start of decoding.
 
 I am using the first encoded_hidden_state 
 as the initial decoder state. The first encoded_hidden_state may have the least 
@@ -659,30 +660,23 @@ Next, I start a loop which iterates for output_len times.
 Next the <b>attention function</b> is called, to compute the G score by scoring the encoder hidden states
 in term of current decoder hidden step.
 
-The context vector is created by the weight (weighted in terms of G scores) summation
+The context vector is created by the weighted (weighted in terms of G scores) summation
 of hidden states in the local attention window.
 
 I used the formulas mentioned here: https://nlp.stanford.edu/pubs/emnlp15_attn.pdf
 
-to calculate the first actual (not the <SOS> one) y (output) from the context vector and decoder hidden state.
+to calculate the probability distribution for the first output token from the context vector and decoder hidden state.
 
-Note: y is of the same size as the no. of vocabs in vocab_limit. Y is supposed to be 
-a probability distribution. The value of index i of Y denotes the probability for Y 
-to be the word that is located in the index i of vacab_limit.
+The word vector represention of the output token - the word with maximum the predicted probability in the recently calculated probability distribution, is used as the decoder input token. The output decoder hidden state from that current decoder input token, and the hidden state, is used again in the next loop to calculate the probability distribution of the next output token and so on. 
 
-('beam search' is another approach to look into, for not predicting simply the next word,
-but the next k words.)
+('beam search' is another approach to look into at this part)
 
-This y will be the input for the <b>decoder LSTM</b>. In the context of this y and 
-the current decoder hidden state, the RNN produces the next decoder hidden state. And, the loop
-continues for 'output_len' no. of iterations. 
+The loop continues for 'output_len' no. of iterations. 
 
 Since I will be training sample to sample, I can dynamically send the output length 
 of the current sample, and the decoder loops for the given 'output length' times.
 
-NOTE: I am saving y without softmax in the tensorarray output. Why? Because
-I will be using tensorflow cost functions that requires the logits to be without
-softmax (the function will internally apply Softmax).
+NOTE: I am saving only the (non-softmaxed) probability distributions for prediction. 
 
 
 ```python
@@ -738,16 +732,16 @@ def model(tf_text,tf_seq_len,tf_output_len):
     Ws = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,vocab_len],stddev=0.01))
     
     cell_d = tf.zeros([1,2*hidden_size],dtype=tf.float32)
-    wf_d = tf.Variable(tf.truncated_normal(shape=[vocab_len,2*hidden_size],stddev=0.01))
+    wf_d = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,2*hidden_size],stddev=0.01))
     uf_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
     bf_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
-    wi_d = tf.Variable(tf.truncated_normal(shape=[vocab_len,2*hidden_size],stddev=0.01))
+    wi_d = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,2*hidden_size],stddev=0.01))
     ui_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
     bi_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
-    wo_d = tf.Variable(tf.truncated_normal(shape=[vocab_len,2*hidden_size],stddev=0.01))
+    wo_d = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,2*hidden_size],stddev=0.01))
     uo_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
     bo_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
-    wc_d = tf.Variable(tf.truncated_normal(shape=[vocab_len,2*hidden_size],stddev=0.01))
+    wc_d = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,2*hidden_size],stddev=0.01))
     uc_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
     bc_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
     
@@ -787,9 +781,10 @@ def model(tf_text,tf_seq_len,tf_output_len):
     decoded_hidden = encoded_hidden[0]
     decoded_hidden = tf.reshape(decoded_hidden,[1,2*hidden_size])
     Wattention_d_normalized = tf.nn.softmax(Wattention_d)
+    tf_embd_limit = tf.convert_to_tensor(np_embd_limit)
     
-    y = tf.convert_to_tensor(SOS_prob_dist) #inital output <SOS>
-    y = tf.reshape(y,[1,vocab_len])
+    y = tf.convert_to_tensor(SOS) #inital decoder token <SOS> vector
+    y = tf.reshape(y,[1,word_vec_dim])
     
     j=K
     
@@ -832,8 +827,16 @@ def model(tf_text,tf_seq_len,tf_output_len):
         y = tf.matmul(attended_hidden,Ws)
         
         output = output.write(i,tf.reshape(y,[vocab_len]))
+        #Save probability distribution as output
         
         y = tf.nn.softmax(y)
+        
+        y_index = tf.cast(tf.argmax(tf.reshape(y,[vocab_len])),tf.int32)
+        y = tf_embd_limit[y_index]
+        y = tf.reshape(y,[1,word_vec_dim])
+        
+        #setting next decoder input token as the word_vector of maximum probability 
+        #as found from previous attention-decoder output.
         
         hidden_residuals_stack = hidden_residuals_d.stack()
         
@@ -1050,13 +1053,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    15-20 15-20 15-20 effectiveness
+    swipe swipe weiner weiner
     
     ACTUAL SUMMARY:
     
     good quality dog food
     
-    loss=10.3909
+    loss=10.3719
     
     Iteration: 1
     Training input sequence length: 37
@@ -1068,13 +1071,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    quality food food
+    good food food
     
     ACTUAL SUMMARY:
     
     not as advertised
     
-    loss=10.4148
+    loss=10.5117
     
     Iteration: 2
     Training input sequence length: 46
@@ -1092,7 +1095,7 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     cough medicine
     
-    loss=10.385
+    loss=10.497
     
     Iteration: 3
     Training input sequence length: 32
@@ -1104,13 +1107,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    quality food
+    not advertised
     
     ACTUAL SUMMARY:
     
     great taffy
     
-    loss=10.3916
+    loss=10.4166
     
     Iteration: 4
     Training input sequence length: 30
@@ -1122,13 +1125,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    quality food food food
+    not advertised advertised advertised
     
     ACTUAL SUMMARY:
     
     wonderful, tasty taffy
     
-    loss=10.2868
+    loss=10.62
     
     Iteration: 5
     Training input sequence length: 29
@@ -1140,13 +1143,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not food
+    not advertised
     
     ACTUAL SUMMARY:
     
     yay barley
     
-    loss=10.3993
+    loss=12.5289
     
     Iteration: 6
     Training input sequence length: 29
@@ -1158,13 +1161,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not food food
+    not advertised advertised
     
     ACTUAL SUMMARY:
     
     healthy dog food
     
-    loss=9.35136
+    loss=7.77178
     
     Iteration: 7
     Training input sequence length: 24
@@ -1176,13 +1179,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not food food food
+    cough taffy taffy taffy
     
     ACTUAL SUMMARY:
     
     strawberry twizzlers- yummy
     
-    loss=10.4702
+    loss=13.8934
     
     Iteration: 8
     Training input sequence length: 45
@@ -1194,13 +1197,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not food
+    cough taffy
     
     ACTUAL SUMMARY:
     
     poor taste
     
-    loss=10.4183
+    loss=13.8444
     
     Iteration: 9
     Training input sequence length: 28
@@ -1212,13 +1215,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    not food food
+    cough taffy food
     
     ACTUAL SUMMARY:
     
     love it!
     
-    loss=10.3971
+    loss=13.4374
     
     Iteration: 10
     Training input sequence length: 31
@@ -1230,13 +1233,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    food food food
+    great taffy food
     
     ACTUAL SUMMARY:
     
     home delivered unk
     
-    loss=10.3215
+    loss=12.8076
     
     Iteration: 11
     Training input sequence length: 52
@@ -1248,13 +1251,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    food food
+    great great
     
     ACTUAL SUMMARY:
     
     always fresh
     
-    loss=10.3019
+    loss=10.7377
     
     Iteration: 12
     Training input sequence length: 68
@@ -1266,13 +1269,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    food
+    yay
     
     ACTUAL SUMMARY:
     
     twizzlers
     
-    loss=9.13059
+    loss=6.44585
     
     Iteration: 13
     Training input sequence length: 31
@@ -1284,13 +1287,13 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    food food food
+    yay barley,
     
     ACTUAL SUMMARY:
     
     delicious product!
     
-    loss=9.87088
+    loss=9.29425
     
     Iteration: 14
     Training input sequence length: 21
@@ -1302,1290 +1305,31 @@ with tf.Session() as sess: # Start Tensorflow Session
     
     PREDICTED SUMMARY:
     
-    food
+    twizzlers
     
     ACTUAL SUMMARY:
     
     twizzlers
     
-    loss=8.08563
+    loss=3.23818
     
     Iteration: 15
     Training input sequence length: 72
     Training target outputs sequence length: 7
     
     TEXT:
-    i have lived out of the us for over 7 yrs now, and i so miss my twizzlers!! when i go back to visit or someone visits me, i always stock up. all i can say is yum!< br/> sell these in mexico and you will have a faithful buyer, more often than i 'm able to buy them right now.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food food food food food food food
-    
-    ACTUAL SUMMARY:
-    
-    please sell these in mexico!!
-    
-    loss=9.52525
-    
-    Iteration: 16
-    Training input sequence length: 36
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    product received is as unk< br/>< br/>< a unk '' http: unk ''> twizzlers, strawberry, 16-ounce bags( pack of 6)< unk>
-    
-    
-    PREDICTED SUMMARY:
-    
-    food food food
-    
-    ACTUAL SUMMARY:
-    
-    twizzlers- strawberry
-    
-    loss=6.50716
-    
-    Iteration: 17
-    Training input sequence length: 43
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    i was so glad amazon carried these batteries. i have a hard time finding them elsewhere because they are such a unique size. i need them for my garage door unk< br/> great deal for the price.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food food food food food
-    
-    ACTUAL SUMMARY:
-    
-    great bargain for the price
-    
-    loss=9.7148
-    
-    Iteration: 18
-    Training input sequence length: 26
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    this offer is a great price and a great taste, thanks amazon for selling this unk< br/>< br/> unk
-    
-    
-    PREDICTED SUMMARY:
-    
-    food food food food food
-    
-    ACTUAL SUMMARY:
-    
-    this is my taste ...
-    
-    loss=9.77397
-    
-    Iteration: 19
-    Training input sequence length: 60
-    Training target outputs sequence length: 7
-    
-    TEXT:
-    for those of us with celiac disease this product is a lifesaver and what could be better than getting it at almost half the price of the grocery or health food store! i love mccann 's instant oatmeal- all flavors!!!< br/>< br/> thanks,< br/> abby
-    
-    
-    PREDICTED SUMMARY:
-    
-    food food food food food food food
-    
-    ACTUAL SUMMARY:
-    
-    love gluten free oatmeal!!!
-    
-    loss=7.71986
-    
-    Iteration: 20
-    Training input sequence length: 59
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    what else do you need to know? oatmeal, instant( make it with a half cup of low-fat milk and add raisins; nuke for 90 seconds). more expensive than kroger store brand oatmeal and maybe a little tastier or better texture or something. it 's still just oatmeal. mmm, convenient!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food food
-    
-    ACTUAL SUMMARY:
-    
-    it 's oatmeal
-    
-    loss=9.44353
-    
-    Iteration: 21
-    Training input sequence length: 79
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    i ordered this for my wife as it was unk by our daughter. she has this almost every morning and likes all flavors. she 's happy, i 'm happy!!!< br/>< a unk '' http: unk ''> mccann 's instant irish oatmeal, variety pack of regular, apples& cinnamon, and maple& brown sugar, 10-count boxes( pack of 6)< unk>
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food food food
-    
-    ACTUAL SUMMARY:
-    
-    wife 's favorite breakfast
-    
-    loss=11.2363
-    
-    Iteration: 22
-    Training input sequence length: 38
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    i have mccann 's oatmeal every morning and by ordering it from amazon i am able to save almost$ 3.00 per unk< br/> it is a great product. tastes great and very healthy
-    
-    
-    PREDICTED SUMMARY:
-    
-    great
-    
-    ACTUAL SUMMARY:
-    
-    unk
-    
-    loss=5.83876
-    
-    Iteration: 23
-    Training input sequence length: 41
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    mccann 's oatmeal is a good quality choice. our favorite is the apples and cinnamon, but we find that none of these are overly sugary. for a good hot breakfast in 2 minutes, this is excellent.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great great
-    
-    ACTUAL SUMMARY:
-    
-    good hot breakfast
-    
-    loss=9.0744
-    
-    Iteration: 24
-    Training input sequence length: 55
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    we really like the mccann 's steel cut oats but find we do n't cook it up too unk< br/> this tastes much better to me than the grocery store brands and is just as unk< br/> anything that keeps me eating oatmeal regularly is a good thing.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers twizzlers!!
-    
-    ACTUAL SUMMARY:
-    
-    great taste and convenience
-    
-    loss=7.54807
-    
-    Iteration: 25
-    Training input sequence length: 46
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    this seems a little more wholesome than some of the supermarket brands, but it is somewhat mushy and does n't have quite as much flavor either. it did n't pass muster with my kids, so i probably wo n't buy it again.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers twizzlers
-    
-    ACTUAL SUMMARY:
-    
-    hearty oatmeal
-    
-    loss=10.0591
-    
-    Iteration: 26
-    Training input sequence length: 52
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    good oatmeal. i like the apple cinnamon the best. though i would n't follow the directions on the package since it always comes out too soupy for my taste. that could just be me since i like my oatmeal really thick to add some milk on top of.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers
-    
-    ACTUAL SUMMARY:
-    
-    good
-    
-    loss=4.35645
-    
-    Iteration: 27
-    Training input sequence length: 25
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    the flavors are good. however, i do not see any unk between this and unk oats brand- they are both mushy.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers
-    
-    ACTUAL SUMMARY:
-    
-    mushy
-    
-    loss=11.9467
-    
-    Iteration: 28
-    Training input sequence length: 41
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    this is the same stuff you can buy at the big box stores. there is nothing healthy about it. it is just carbs and sugars. save your money and get something that at least has some taste.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!
-    
-    ACTUAL SUMMARY:
-    
-    same stuff
-    
-    loss=12.031
-    
-    Iteration: 29
-    Training input sequence length: 25
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    this oatmeal is not good. its mushy, soft, i do n't like it. quaker oats is the way to go.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!!
-    
-    ACTUAL SUMMARY:
-    
-    do n't like it
-    
-    loss=9.48624
-    
-    Iteration: 30
-    Training input sequence length: 37
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    we 're used to spicy foods down here in south texas and these are not at all spicy. doubt very much habanero is used at all. could take it up a notch or two.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!
-    
-    ACTUAL SUMMARY:
-    
-    not ass kickin
-    
-    loss=9.74505
-    
-    Iteration: 31
-    Training input sequence length: 80
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    i roast at home with a unk popcorn popper( but i do it outside, of course). these beans( coffee bean direct green mexican altura) seem to be well-suited for this method. the first and second cracks are distinct, and i 've roasted the beans from medium to slightly dark with great results every time. the aroma is strong and persistent. the taste is smooth, velvety, yet lively.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!!!
-    
-    ACTUAL SUMMARY:
-    
-    roasts up a smooth brew
-    
-    loss=11.588
-    
-    Iteration: 32
-    Training input sequence length: 69
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    we roast these in a large cast iron pan on the grill( about 1/3 of the bag at a time). the smell is wonderful and the roasted beans taste delicious too. more importantly, the coffee is smooth; no bitter aftertaste. on numerous occasions, we 've had to send the roasted beans home with friends because they like it so much.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!!!
-    
-    ACTUAL SUMMARY:
-    
-    our guests love it!
-    
-    loss=6.4716
-    
-    Iteration: 33
-    Training input sequence length: 38
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    deal was awesome! arrived before halloween as indicated and was enough to satisfy trick or treaters. i love the quality of this product and it was much less expensive than the local store 's candy.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!
-    
-    ACTUAL SUMMARY:
-    
-    awesome deal!
-    
-    loss=8.3475
-    
-    Iteration: 34
-    Training input sequence length: 40
-    Training target outputs sequence length: 6
-    
-    TEXT:
-    it is chocolate, what can i say. great variety of everything our family loves. with a family of six it goes fast here. perfect variety. kit kat, unk, take five and more.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!!!!
-    
-    ACTUAL SUMMARY:
-    
-    how can you go wrong!
-    
-    loss=9.67854
-    
-    Iteration: 35
-    Training input sequence length: 26
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    halloween is over but, i sent a bag to my daughters class for her share. the chocolate was fresh and enjoyed by many.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!
-    
-    ACTUAL SUMMARY:
-    
-    great deal.
-    
-    loss=8.14521
-    
-    Iteration: 36
-    Training input sequence length: 38
-    Training target outputs sequence length: 6
-    
-    TEXT:
-    watch your prices with this. while the assortment was good, and i did get this on a gold box purchase, the price for this was< br/>$ 3-4 less at target.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!!!!!
-    
-    ACTUAL SUMMARY:
-    
-    better price for this at target
-    
-    loss=8.73441
-    
-    Iteration: 37
-    Training input sequence length: 33
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    this bag of candy online is pretty expensive, it should be cheaper in order to compete with grocery stores, other than that, its a good combination of my favorite candy
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers!
-    
-    ACTUAL SUMMARY:
-    
-    pretty expensive
-    
-    loss=10.8112
-    
-    Iteration: 38
-    Training input sequence length: 64
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    this product serves me well as a source of electrolytes during and after a long run or bike unk< br/> i have tried all of the flavors but really do like the grapefruit flavor ... no unk and i actually like the slight unk< br/> i use other hammer products and really like their whole product line.
-    
-    
-    PREDICTED SUMMARY:
-    
-    good!!!
-    
-    ACTUAL SUMMARY:
-    
-    great source of electrolytes
-    
-    loss=9.28261
-    
-    Iteration: 39
-    Training input sequence length: 36
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    this stuff really works for preventing cramping during the middle to latter stages of your rides. pop 1 into each water bottle and you 're set. flavor is fine and goes down easy.
-    
-    
-    PREDICTED SUMMARY:
-    
-    good!!!
-    
-    ACTUAL SUMMARY:
-    
-    great for preventing cramps
-    
-    loss=7.69772
-    
-    Iteration: 40
-    Training input sequence length: 23
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    no tea flavor at all. just whole brunch of unk flavors. it is not returnable. i wasted unk bucks.
-    
-    
-    PREDICTED SUMMARY:
-    
-    good!!
-    
-    ACTUAL SUMMARY:
-    
-    no tea flavor
-    
-    loss=10.7192
-    
-    Iteration: 41
-    Training input sequence length: 67
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    these taste really good. i have been purchasing a different brand and these are very similar in taste and texture. i agree with the other reviewer regarding ordering in the summer. there is no insulating packaging with ice packs so they will melt in warm weather like all chocolate food items. order in cold weather and buy enough to last!!!
-    
-    
-    PREDICTED SUMMARY:
-    
-    good!
-    
-    ACTUAL SUMMARY:
-    
-    taste great
-    
-    loss=4.2054
-    
-    Iteration: 42
-    Training input sequence length: 28
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    the taste was great, but the berries had melted. may order again in winter. if you order in cold weather you should enjoy flavor.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great!!!!
-    
-    ACTUAL SUMMARY:
-    
-    order only in cold weather
-    
-    loss=9.69668
-    
-    Iteration: 43
-    Training input sequence length: 39
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    i know i can not make tea this good. granted, i am not from the south but i know i have never enjoyed tea that was this sweet without being too sweet. it tastes crisp.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great!!!
-    
-    ACTUAL SUMMARY:
-    
-    this is the best
-    
-    loss=6.75685
-    
-    Iteration: 44
-    Training input sequence length: 41
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    this peppermint stick is delicious and fun to eat. my dad got me one for christmas because he remembered me having a similar one when i was a little girl. i 'm 30 now and i love it!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great
-    
-    ACTUAL SUMMARY:
-    
-    delicious!
-    
-    loss=4.01642
-    
-    Iteration: 45
-    Training input sequence length: 29
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    great gift for all ages! i purchased these giant canes before and the recipients loved them so much, they kept them and would not eat them.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great
-    
-    ACTUAL SUMMARY:
-    
-    great
-    
-    loss=1.70116
-    
-    Iteration: 46
-    Training input sequence length: 77
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    awesome dog food. however, when given to my `` boston '', who has severe reactions to some food ingredients; his itching increased to violent jumping out of bed at night, scratching. as soon as i changed to a different formula, the scratching stopped. so glad natural balance has other choices. i guess you have to try each, until you find what 's best for your pet.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great great great
-    
-    ACTUAL SUMMARY:
-    
-    increased my dogs itching
-    
-    loss=10.4727
-    
-    Iteration: 47
-    Training input sequence length: 56
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    we have three dogs and all of them love this food! we bought it specifically for one of our dogs who has food allergies and it works great for him, no more hot spots or tummy unk< br/> i love that it ships right to our door with free shipping.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great great
-    
-    ACTUAL SUMMARY:
-    
-    great food!
-    
-    loss=3.04694
-    
-    Iteration: 48
-    Training input sequence length: 42
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    my unk mix has ibs. our vet recommended a limited ingredient food. this has really helped her symptoms and she likes it. i will always buy it from amazon ... it 's$ 10 cheaper and free shipping!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great great great great
-    
-    ACTUAL SUMMARY:
-    
-    great for stomach problems!
-    
-    loss=6.43315
-    
-    Iteration: 49
-    Training input sequence length: 58
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    great food! i love the idea of one food for all ages& breeds. t 's a real convenience as well as a really good product. my 3 dogs eat less, have almost no gas, their poop is regular and a perfect consistency, what else can a mom ask for!!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great
-    
-    ACTUAL SUMMARY:
-    
-    great food
-    
-    loss=3.02226
-    
-    Iteration: 50
-    Training input sequence length: 24
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    this is great dog food, my dog has severs allergies and this brand is the only one that we can feed him.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great!!
-    
-    ACTUAL SUMMARY:
-    
-    great dog food
-    
-    loss=3.86777
-    
-    Iteration: 51
-    Training input sequence length: 43
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    this food is great- all ages dogs. i have a 3 year old and a puppy. they are both so soft and hardly ever get sick. the food is good especially when you have amazon prime shipping:)
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great great!
-    
-    ACTUAL SUMMARY:
-    
-    mmmmm mmmmm good.
-    
-    loss=9.50443
-    
-    Iteration: 52
-    Training input sequence length: 28
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    this is the same food we get at pet store. but it 's delivered to my door! and for the same price or slightly less.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great!
-    
-    ACTUAL SUMMARY:
-    
-    so convenient
-    
-    loss=13.1772
-    
-    Iteration: 53
-    Training input sequence length: 67
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    i 've been very pleased with the natural balance dog food. our dogs have had issues with other dog foods in the past and i had someone recommend natural balance grain free since it is possible they were allergic to grains. since switching i have n't had any issues. it is also helpful that have have different kibble size for unk sized dogs.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great great great
-    
-    ACTUAL SUMMARY:
-    
-    good healthy dog food
-    
-    loss=4.78182
-    
-    Iteration: 54
-    Training input sequence length: 43
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    i fed this to my golden retriever and he hated it. he would n't eat it, and when he did, it gave him terrible diarrhea. we will not be buying this again. it 's also super expensive.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great
-    
-    ACTUAL SUMMARY:
-    
-    bad
-    
-    loss=14.4075
-    
-    Iteration: 55
-    Training input sequence length: 24
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    arrived slightly thawed. my parents would n't accept it. however, the company was very helpful and issued a full refund.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great!
-    
-    ACTUAL SUMMARY:
-    
-    great support
-    
-    loss=6.12445
-    
-    Iteration: 56
-    Training input sequence length: 56
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    the crust on these tarts are perfect. my husband loves these, but i 'm not so crazy about them. they are just too unk for my taste. i 'll eat the crust and hubby takes my filling. my kids think they 're great, so maybe it 's just me.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great
-    
-    ACTUAL SUMMARY:
-    
-    tart!
-    
-    loss=7.88888
-    
-    Iteration: 57
-    Training input sequence length: 39
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    these are absolutely unk! my husband and i both love them, however, as another customer put it, they are expensive to ship! the cost of shipping is more than the tartlets themselves are!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food!
-    
-    ACTUAL SUMMARY:
-    
-    omaha apple tartlets
-    
-    loss=12.924
-    
-    Iteration: 58
-    Training input sequence length: 37
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    what a nice alternative to an apple pie. love the fact there was no slicing and dicing. easy to prepare. i also loved the fact that you can make them fresh whenever needed.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food food
-    
-    ACTUAL SUMMARY:
-    
-    loved these tartlets
-    
-    loss=10.2792
-    
-    Iteration: 59
-    Training input sequence length: 58
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i like creme brulee. i loved that these were so easy. just sprinkle on the sugar that came with and broil. they look amazing and taste great. my guess thought i really went out of the way for them when really it took all of 5 minutes. i will be ordering more!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food
-    
-    ACTUAL SUMMARY:
-    
-    the best
-    
-    loss=5.38269
-    
-    Iteration: 60
-    Training input sequence length: 63
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i love asparagus. up until very recently, i had never had pickled asparagus. oh my goodness, when a friend introduced me to this exact brand, i could n't believe how great stuff tasted. i loved it so much i bought the six pack. i 've got 2 jars left. gon na need more!!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food
-    
-    ACTUAL SUMMARY:
-    
-    asparagus bliss
-    
-    loss=11.9187
-    
-    Iteration: 61
-    Training input sequence length: 33
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    i was unk in the flavor and texture of this mix. i usually like most of the low carb things i have tried, but was unk in this specific one.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food food food food
-    
-    ACTUAL SUMMARY:
-    
-    low carb angel food puffs
-    
-    loss=9.81204
-    
-    Iteration: 62
-    Training input sequence length: 60
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i have been drinking this tea for a long time now. i used to have to purchase it at a doctor 's office because it was n't available elsewhere. i 'm so glad that i can buy it now from amazon.com. i drink this tea throughout the day like other folks drink coffee. wonderful taste.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food
-    
-    ACTUAL SUMMARY:
-    
-    delicious tea
-    
-    loss=4.55072
-    
-    Iteration: 63
-    Training input sequence length: 65
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i love, love this green tea. it is very hard to find in our area and some places on the internet charge a big price and i usually do n't get as many boxes as i did with this merchant. i will definitely order from this seller again!! thanks!! i depend on my green tea fix everyday!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great food
-    
-    ACTUAL SUMMARY:
-    
-    tea review
-    
-    loss=8.26901
-    
-    Iteration: 64
-    Training input sequence length: 26
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i love this tea. it helps curb my eating during the day. my mom and i have given it all friends to try.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food.
-    
-    ACTUAL SUMMARY:
-    
-    wonderful tea
-    
-    loss=5.67268
-    
-    Iteration: 65
-    Training input sequence length: 47
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i 'm italian and i lived in italy for years. i used to buy these cookies for my everyday breakfast with an italian espresso. i could n't find them anywhere here in the bay area, so it 's great to have them again.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea
-    
-    ACTUAL SUMMARY:
-    
-    great cookies
-    
-    loss=7.8061
-    
-    Iteration: 66
-    Training input sequence length: 79
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    i have done a lot of research to find the best food for my cat, and this is an excellent food. that is also according to my holistic veterinarian. they put probiotics on the kibble as the last step, which is very important to me. the best thing is that my cat loved it immediately and i had to stop mixing it with the old food because she only would eat holistic select.
-    
-    
-    PREDICTED SUMMARY:
-    
-    delicious tea tea
-    
-    ACTUAL SUMMARY:
-    
-    great food.
-    
-    loss=3.78115
-    
-    Iteration: 67
-    Training input sequence length: 65
-    Training target outputs sequence length: 7
-    
-    TEXT:
-    one of my cats is allergic to fish and beef. this formula is one of the few she can eat, and it has much better ingredients than the prescription diets available at the vet. both of my kitties are very active, have soft shiny fur, and neither are fat. dry food reduces tartar buildup on teeth, also.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea tea tea tea tea tea
-    
-    ACTUAL SUMMARY:
-    
-    wonderful food- perfect for allergic kitties
-    
-    loss=8.03118
-    
-    Iteration: 68
-    Training input sequence length: 51
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    our cats thrive extremely well on this dry cat food. they definitely have much less hair ball throw ups and their fur is great. they are fit and not over weight. this vendor ships extremely fast. is one of the top amazon suppliers in our book!
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea tea tea
-    
-    ACTUAL SUMMARY:
-    
-    holistic select cat food
-    
-    loss=9.35138
-    
-    Iteration: 69
-    Training input sequence length: 45
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    i 've been eating ramen noodles since i was a little kid, and i 've never found a better flavor than hot& spicy chicken! it is n't hot at all to a unk like me, but it sure is good!
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea tea
-    
-    ACTUAL SUMMARY:
-    
-    my favorite ramen
-    
-    loss=7.70701
-    
-    Iteration: 70
-    Training input sequence length: 54
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    i love spicy ramen, but for whatever reasons this thing burns my stomach badly and the burning sensation does n't go away for like 3 hours! not sure if that is healthy or not .... and you can buy this at walmart for$ 0.28, way cheaper than amazon.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea tea
-    
-    ACTUAL SUMMARY:
-    
-    it burns!
-    
-    loss=7.53228
-    
-    Iteration: 71
-    Training input sequence length: 42
-    Training target outputs sequence length: 6
-    
-    TEXT:
-    always being a fan of ramen as a quick and easy meal, finding it on amazon for a decent price and having it delivered to your door by the case is an amazing situation for anyone to find themselves in.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea tea tea tea tea
-    
-    ACTUAL SUMMARY:
-    
-    amazing to the last bite.
-    
-    loss=9.26448
-    
-    Iteration: 72
-    Training input sequence length: 56
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    i must be a bit of a wuss, because this soup tastes to me how i imagine fire might taste. typically i like spicy food if it has a good flavor. i do n't find this to be the case with this soup. any flavor is killed off by the burn.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea tea
-    
-    ACTUAL SUMMARY:
-    
-    not for me
-    
-    loss=7.93951
-    
-    Iteration: 73
-    Training input sequence length: 50
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    i really loved the spicy flavor these had. i found myself liking the broth more than the noodles which is usually the opposite. if you are n't used to the heat this might bother you and if you like hot hot foods this might not be enough.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea tea
-    
-    ACTUAL SUMMARY:
-    
-    great spicy flavor
-    
-    loss=6.68682
-    
-    Iteration: 74
-    Training input sequence length: 78
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    got these on sale for roughly 25 cents per cup, which is half the price of my local grocery stores, plus they rarely stock the spicy flavors. these things are a great snack for my office where time is constantly crunched and sometimes you ca n't escape for a real meal. this is one of my favorite flavors of instant lunch and will be back to buy every time it goes on sale.
-    
-    
-    PREDICTED SUMMARY:
-    
-    food food tea tea tea
-    
-    ACTUAL SUMMARY:
-    
-    great value and convenient ramen
-    
-    loss=7.53814
-    
-    Iteration: 75
-    Training input sequence length: 22
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i have bought allot of different flavors and this happens to be one of my favorites and will be getting more soon
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea
-    
-    ACTUAL SUMMARY:
-    
-    great flavor
-    
-    loss=3.15631
-    
-    Iteration: 76
-    Training input sequence length: 74
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    the best investment i 've ever made for ginger. it 's unbelievable! it 's fibrous like the real ginger, has that spicy kick to it, but it 's perfect with the sugar- calms it down. it 's very worth the$ 40 for unk of it! i 'll be getting more soon- i use these as a topper for my ginger cupcakes and cookies:)
-    
-    
-    PREDICTED SUMMARY:
-    
-    food tea tea tea tea
-    
-    ACTUAL SUMMARY:
-    
-    tastes awesome& looks beautiful
-    
-    loss=11.1367
-    
-    Iteration: 77
-    Training input sequence length: 33
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    delicious. i can not get australian ginger where i live. this compares favorably to australian ginger i 've purchased in other cities. now i can enjoy it without traveling.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great tea
-    
-    ACTUAL SUMMARY:
-    
-    happy face
-    
-    loss=13.2036
-    
-    Iteration: 78
-    Training input sequence length: 30
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    i keep trying other brands .... cheaper brands. stupid me! this ginger is soooo worth the money. tender, moist and never a let down.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great tea tea tea
-    
-    ACTUAL SUMMARY:
-    
-    simply the best!
-    
-    loss=6.33492
-    
-    Iteration: 79
-    Training input sequence length: 52
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i bought this for our office to give people something sweet to snack on. because it 's bite size it 's easier for people to grab a couple a pieces rather than an entire licorice stick. my only complaint is that one of the bags broke open in shipping.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great flavor
-    
-    ACTUAL SUMMARY:
-    
-    nice snack
-    
-    loss=13.0985
-    
-    Iteration: 80
-    Training input sequence length: 59
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    twizzlers brand licorice is much better than that other well known unk< br/> if you can get these for$ 2 to$ 2.50 a package with free unk it 's a good unk< br/> the black and cherry have good taste; but the strawberry taste was too delicate and barely there
-    
-    
-    PREDICTED SUMMARY:
-    
-    great flavor
-    
-    ACTUAL SUMMARY:
-    
-    good licorice
-    
-    loss=8.12259
-    
-    Iteration: 81
-    Training input sequence length: 36
-    Training target outputs sequence length: 5
-    
-    TEXT:
-    this is one of the best salsas that i have found in a long time but stay away from the variety pack. the other two that come with it are not worth your money.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great flavor flavor flavor flavor
-    
-    ACTUAL SUMMARY:
-    
-    love the salsa!!
-    
-    loss=6.54998
-    
-    Iteration: 82
-    Training input sequence length: 44
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    these remind me of dog treats i made once using pumpkin and cinnamon. they 're kind of bland and not my favorite back to nature product. but my unk really loves them so that 's where the three stars come from.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great flavor
-    
-    ACTUAL SUMMARY:
-    
-    unk ...
-    
-    loss=5.97179
-    
-    Iteration: 83
-    Training input sequence length: 39
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    this is the best cornmeal. i made regular cornbread and hot water cornbread with this meal and both were outstanding. also fried some oysters with this meal, it gave them a great texture and unk.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great flavor
-    
-    ACTUAL SUMMARY:
-    
-    awesome cornmeal
-    
-    loss=8.57024
-    
-    Iteration: 84
-    Training input sequence length: 64
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    this is a fabulous marinade! i love to use it for chicken, either baked in the oven or on the grill. this has enough flavor& flair, i 've even used it for dinner parties, only to receive rave reviews from my guests!! definitely worth the price! super cheap and super easy! love it!
-    
-    
-    PREDICTED SUMMARY:
-    
-    great flavor flavor
-    
-    ACTUAL SUMMARY:
-    
-    great marinade!
-    
-    loss=5.96674
-    
-    Iteration: 85
-    Training input sequence length: 29
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    works with chicken fish beef or pork. fast easy and makes it taste excellent. plus buying in bulk is more than 50% off from box stores
-    
-    
-    PREDICTED SUMMARY:
-    
-    great flavor
-    
-    ACTUAL SUMMARY:
-    
-    awesome stuff
-    
-    loss=5.27093
-    
-    
+    i have lived out of the us for over 7 yrs now
+
+### To Try\ To Do\ To keep in mind:
+
+* Beam Search
+* Pointer Mechanisms
+* Heirarchical attention
+* [Intra-input-attention](https://arxiv.org/pdf/1705.04304.pdf)
+* Better pre-processing
+* Switch to PyTorch for dynamic models.
+* Mini-Batch Training
+* Better Datasets.
+* Train for different tasks (eg. Translation) using different datasets.
+* Intra-layer attention for both encoder and decoder together with everything else.
+* Adopt a more object oriented approach
