@@ -1337,3 +1337,4 @@ with tf.Session() as sess: # Start Tensorflow Session
 * Validation
 * Testing
 * Implement Evaluation Metrics (ROUGE\BLEU\Something else)
+* Try some of these tricks: http://ruder.io/deep-learning-nlp-best-practices/index.html#hyperparameteroptimization
