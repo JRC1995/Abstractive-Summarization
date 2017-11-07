@@ -1320,14 +1320,15 @@ with tf.Session() as sess: # Start Tensorflow Session
     TEXT:
     i have lived out of the us for over 7 yrs now
 
-### To Try\ To Do\ To keep in mind:
+### To Try\ To Do\ To keep in mind: (It's more like a note to self)
 
 * Beam Search
 * Pointer Mechanisms
 * Heirarchical attention
+* Try some of these tricks: http://ruder.io/deep-learning-nlp-best-practices/index.html#hyperparameteroptimization
 * [Intra-input-attention](https://arxiv.org/pdf/1705.04304.pdf)
 * Better pre-processing
-* Switch to PyTorch for dynamic models.
+* Switch to PyTorch or DyNet or something more suitable for dynamic models. 
 * Mini-Batch Training
 * Better Datasets.
 * Train for different tasks (eg. Translation) using different datasets.
@@ -1337,4 +1338,5 @@ with tf.Session() as sess: # Start Tensorflow Session
 * Validation
 * Testing
 * Implement Evaluation Metrics (ROUGE\BLEU\Something else)
-* Try some of these tricks: http://ruder.io/deep-learning-nlp-best-practices/index.html#hyperparameteroptimization
+
+
