@@ -266,12 +266,7 @@ for summary in vec_summaries:
     i=i+1
 ```
 
-Here I will start the aformentioned removal process.
-vec_summary_reduced and vec_texts_reduced will contain the remaining data after the removal.
-
-<b>Note: an important hyperparameter D is initialized here.</b>
-
-D determines the window size of local attention as mentioned before.
+Creating train, validation and test batches.
 
 
 ```python
