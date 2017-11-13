@@ -36,12 +36,12 @@ word_vec_dim = len(embedding[0])
     Loaded GloVe!
 
 
-Here I will define functions for converting words to its vector representations and vice versa. 
+Here, I will define functions for converting words to their vector representations, and vice versa. 
 
 ### word2vec: 
 
-Converts words to its vector representations.
-If the word is not present in the vocabulary, and thus if it doesn't have any vector representation,
+Converts words to their vector representations.
+If a word is not present in the vocabulary, and thus if it doesn't have any vector representation,
 the word will be considered as 'unk' (denotes unknown) and the vector representation of unk will be
 returned instead. 
 
@@ -108,13 +108,13 @@ with open ('vec_texts', 'rb') as fp:
     
 ```
 
-Here, I am Loading vocab_limit and embd_limit (though I may not ever use embd_limit).
-Vocab_limit contains only vocabularies that are present in the dataset and 
-some special words representing markers 'eos', '<PAD>' etc.
+Here, I am Loading vocab_limit and embd_limit.
+Vocab_limit contains only the words that are present in the dataset, along
+some special words representing markers for EOS, PAD etc.
 
 The network should output the probability distribution over the words in 
 vocab_limit. So using limited vocabulary (vocab_limit) will mean requiring
-less parameters for calculating the probability distribution.
+less parameters for calculating the probability distribution as compared to using the complete vocabulary from gloVe dataset.
 
 
 ```python
@@ -142,37 +142,19 @@ np_embd_limit = np.asarray(embd_limit,dtype=np.float32)
 
 ### REMOVING DATA WITH SUMMARIES WHICH ARE TOO LONG
 
-I will not be training the model in batches. I will train the model one sample at a time, because my laptop
-will probably not be able to handle batch training (the kernel crashes now and then even with SGD ).
+I will not be training the model in batches. I will train the model one sample at a time, because my old laptop
+will probably not be able to handle batch training.
 
-However, if I was training in batches I had to choose a fixed maximum length for output.
-Each target output is marked with the word 'eos' at the end. After that each target output can be padded with
-'<PAD>' to fit the maximum output length. The network can be taught to produce an output in the form
-"word1 word2 eos <PAD> <PAD>". The batch training can be handled better if all target outputs are transformed
-to a fixed length. 
-
-But, the fixed length should be less than or equal to the length of the longest target output so as to
-not discard any word from any target-output sample.
-
-But there may be a few very long target outputs\summaries (say, 50+) whereas most summaries are near about
-length 10. So to fix the length, lots of padding has to be done to most of the summaries just because there
-are a few long summaries. 
-
-Better to just remove the data whose summaries are bigger than a specified threshold (MAX_SUMMARY_LEN).
-In this cell I will diagnose how many percentage of data will be removed for a given threshold length,
-and in the next cell I will remove them.
-
-Note: I am comparing len(summary_vec)-1, instead of len(summary_vec). The reason is that I am ignoring 
-the last word vector which is the representation of the 'eos' marker. I will explain why later on this
-notebook. 
+Reducing data with high summary lengths will entail less maximum decoder timestep. This step is mainly taken to keep the training light. 
 
 ### REMOVING DATA WITH TEXTS WHOSE LENGTH IS SMALLER THAN THE WINDOW SIZE
 
-In this model I will try to implement <b>local attention</b> with standard encoder-decoder architecture.
+In this model I will try to implement <b>local attention</b> with the seq2seq architecture.
 
 Where global attention looks at all the hidden states of the encoder to determine where to attend to,
 local attention looks only at the hidden states under the range pt-D to pt+D where D is empirically selected
 and pt is a position determined by the program.
+
 The range of pt-D to pt+D can be said to be the window where attention takes place.  Pt is the center of the
 window.
 
