@@ -890,36 +890,6 @@ to the transform_out() function. That is, I am ignoring the last
 word from summary. The last word marks the end of the summary.
 It's 'eos'. 
 
-I trained it before without dynamically feeding the output_len.
-Ideally the network should determine the output_len by itself.
-
-Which is why I defined (in past) a MAX_LEN, and transformed target outputs in
-the form "word1 word2 word3....eos <PAD> <PAD>....until max_length"
-I created the model output in the same way.
-
-The model would ideally learn in which context and where to put eos.
-And then the only the portion before eos can be shown to the user.
-
-After training, the model can even be modified to run until,
-the previous output y denotes an eos. 
-
-That way, we can have variable length output, with the length decided
-by the model itself, not the user.
-
-But all the padding and eos, makes the model to come in contact with 
-pads and eos in most of the target output. The model learns to consider eos and 
-pad to be important. Trying to fit to the data, the early model starts to
-spam eos and pad in its predicted output.
-
-That necessarily isn't a problem. The model may learn to fare better
-later on, but I planned only to check a couple of early iterations, 
-and looking at predictions consisting of only eos and pads
-isn't too interesting. I wanted to check what kind of words (other than
-eos and pads) the model learns to produce in the early iterations. 
-
-Which is why I am doing what I am doing. Ideally, my past implemention
-waould be better. 
-
 As I said before, I will run it for only a few early iterations.
 So, it's not likely to see any great predicted summaries here.
 As can be seen, the summaries seem more influenced by previous 
