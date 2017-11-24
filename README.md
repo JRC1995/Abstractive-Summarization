@@ -43,7 +43,7 @@ Here, I will define functions for converting words to their vector representatio
 Converts words to their vector representations.
 If a word is not present in the vocabulary, and thus if it doesn't have any vector representation,
 the word will be considered as 'unk' (denotes unknown) and the vector representation of unk will be
-returned instead. 
+returned instead. Note: It has nothing to do with 'word2vec' embedding. 
 
 ### np_nearest_neighbour:
 
@@ -126,8 +126,7 @@ with open ('embd_limit', 'rb') as fp:
     
 ```
 
-Including SOS and its vector to the vocbularies. I forgot to do this while pre-processing.
-SOS signifies start of the decoder token input. 
+Including SOS (signifies 'start of sentence'. It will be used as the initial input token for the decoder) and its vector to the vocbularies. I forgot to do this while pre-processing.
 
 
 ```python
@@ -160,13 +159,13 @@ window.
 
 I am treating D as a hyperparameter. The window size will be (pt-D)-(pt+D)+1 = 2D+1.
 
-Now, obviously, the window needs to be smaller than or equal to the no. of the encoded hidden states themselves.
+Now, the window needs to be smaller than or equal to the no. of the encoded hidden states themselves.
 We will encode one hidden state for each words in the input text, so size of the hidden states will be equivalent
 to the size of the input text.
 
 So we must choose D such that 2D+1 is not bigger than the length of any text in the dataset.
 
-To ensure that, I will first diagnose how many data will be removed for a given D, and in the next cell,
+To ensure that, I will first diagnose how many data will be removed for a given D, and in the next jupyter cell,
 I will remove all input texts whose length is less than 2D+1.
 
 ### REMOVING DATA WITH TEXTS(REVIEWS) WHICH ARE TOO LONG
@@ -278,11 +277,12 @@ The function transform_out() will convert the target output sample so that
 it can be in a format which can be used by tensorflow's 
 sparse_softmax_cross_entropy_with_logits() for loss calculation.
 
-Think of one hot encoding. This transformation is kind of like that.
-All the words in the vocab_limit are like classes in this context.
+This transformation will be like one hot encoding, but somewhat different. 
 
-However, instead of being precisely one hot encoded the output will be transformed
-such that it will contain the list of indexes which would have been 'one' if it was one hot encoded.
+Instead of being precisely one hot encoded the output will be transformed
+such that it will contain the list of indices which would have been 'one' if it was one hot encoded.
+
+Each word in vocab_limit will be considered as different classes here. 
 
 
 ```python
@@ -298,7 +298,7 @@ def transform_out(output_text):
 
 Here I am simply setting up some of the rest of the hyperparameters.
 K, here, is a special hyperparameter. It denotes the no. of previous hidden states
-to consider for residual connections. More on that later. 
+to consider for residual connections (elaborated later on)
 
 
 ```python
@@ -339,20 +339,17 @@ that starts from the last word and encodes a word in the context of later words)
 
 The RNN used here, is a standard LSTM with RRA ([Residual Recurrent Attention](https://arxiv.org/abs/1709.03714))
 
-Remember, the hyperparameter K?
-
 The model will compute the weighted sum (weighted based on some trainable parameters
-in the attention weight matrix) of the PREVIOUS K hidden states - the weighted sum
-is denoted as RRA in this function.
+in the attention weight matrix) of the PREVIOUS K (K is the hyperparameter mentioned before) hidden states - the weighted sum is denoted as RRA in this function.
 
-hidden_residuals will contain the last K hidden states.
+The last k indices of hidden_residuals will contain the last K hidden states.
 
 The RRA will influence the Hidden State calculation in LSTM.
 
 (The attention weight matrix is to be normalized by dividing each elements by the sum of all 
 the elements as said in the paper. But, here, I am normalizing it by softmax)
 
-The purpose for this is to created connections between hidden states of different timesteps,
+The purpose for this is to create connections between hidden states of different timesteps,
 to establish long term dependencies.
 
 
@@ -488,12 +485,11 @@ The cell below includes some major functions for the attention mechanism.
 The attention mechanism is usually implemented to compute an attention score 
 for each of the encoded hidden state in the context of a particular
 decoder hidden state in each timestep - all to determine which encoded hidden
-states to attend to for a particular decoder hidden state context.
+states to attend to, given the context of a particular decoder hidden state.
 
 More specifically, I am here implementing local attention as opposed to global attention.
 
-I already mentioned local attention before. Local attention mechanism involves focusing on
-a subset of encoded hidden states, whereas a gloabl attention mechanism invovles focusing on all
+Local attention mechanism involves focusing on a subset of encoded hidden states, whereas a gloabl attention mechanism invovles focusing on all
 the encoded hidden states.
 
 This is the paper on which this implementation is based on:
@@ -506,8 +502,8 @@ pt is simply a position in the sequence.
 For a given pt, the model will only consider the hidden state starting from the position
 pt-D to the hidden state at the position pt+D. 
 
-To say a hidden state is at position p, I mean to say that the hidden state is the encoded
-representation of a word at position p in the sequence.
+To say a hidden state is at position pt, I mean to say that the hidden state is the encoded
+representation of a word at position pt in the sequence.
 
 The paper formulates the equation for calculating pt like this:
 pt = sequence_length x sigmoid(..some linear algebras and activations...)
@@ -519,38 +515,42 @@ if pt = tf_seq_len x sigmoid(tensor)
 
 Then pt will be in the range 0 to tf_seq_len
 
-But, we can't have that. There is no tf_seq_len position. Since the length is tf_seq_len,
-the available positions are 0 to (tf_seq_len-1). Which is why I subtracted 1 from it.
+But, there is no 'tf_seq_len' position, since the length is tf_seq_len,
+the available positions are 0 to (tf_seq_len-1). This is why I subtracted 1 from it.
 
-Next, we must have the value of pt to be such that it represents the CENTER of the window.
-If pt is too close to 0, pt-D will be negative - a non-existent position.
-If pt is too close to tf_seq_len, pt+D will be a non-existent position.
+Next, we must have the value of pt such that it represents the CENTER of the window of size 2D+1.
+
+So the window begin at pt-D and end at pt+D, if pt has to be the center. 
+
+However, if pt is too close to 0, pt-D will be negative - a non-existent position.
+
+And, If pt is too close to tf_seq_len, pt+D will become a non-existent position beyond the maximum sequence length.
 
 So pt can't occupy the first D positions (0 to D-1) and it can't occupy the last D positions
-((tf_seq_len-D) to (tf_seq_len-1)) in order to keep pt-D and pt+D as legal positions.
+((tf_seq_len-D) to (tf_seq_len-1)), if pt-D and pt+D has to be considered as legal positions.
 So a total 2D positions should be restricted to pt.
 
 Which is why I further subtracted 2D from tf_seq_len.
 
 Still, after calculating pt = positions x sigmoid(tensor)
-where positions = tf_seq_len-(2D+1), 
+where positions = tf_seq_len-1-2D or tf_seq_len-(2D+1), 
 pt will merely range between 0 to tf_seq_len-(2D+1)
 
 We can't still accept pt to be 0 since pt-D will be negative. But the length of the range 
-of integer positions pt can occupy is now perfect.
+of integer positions pt can occupy is now accurate.
 
 So at this point, we can simply center pt at the window by adding a D.
 
 After that, pt will range from D to (tf_seq_len-1)-D
 
-Now, it can be checked that pt+D, or pt-D will never become negative or exceed
+Now, it can be checked that pt-D will never become negative, and pt+D will never exceed
 the total sequence length.
 
 After calculating pt, we can use the formulas presented in the paper to calculate
 the G score which signifies the weight (or attention) that should be given to a hidden state.
 
 G scores is calculated for each of hidden states in the local window. This is equivalent to
-a(s) used in the paper.
+the function 'a(s)' used in the paper.
 
 The function returns the G scores and the position pt, so that the model can create the 
 context vector. 
@@ -623,12 +623,12 @@ There are many means of combining them, like: concatenation, summation, average 
     
 I will be using concatenation.
 
-hidden_encoder is the final list of encoded hidden state
+hidden_encoder is the final list of encoded hidden states.
 
 The first decoder input is the word vector representation of <SOS> which siginfies the start of decoding.
 
 I am using the first encoded_hidden_state 
-as the initial decoder state. The first encoded_hidden_state may have the least 
+as the initial decoder hidden state. The first encoded_hidden_state may have the least 
 past context (none actually) but, it will have the most future context.
 
 The next decoder hidden state is generated from the initial decoder input and the initial decoder state.
@@ -646,14 +646,14 @@ to calculate the probability distribution for the first output token from the co
 
 The word vector represention of the output token - the word with maximum the predicted probability in the recently calculated probability distribution, is used as the decoder input token. The output decoder hidden state from that current decoder input token, and the hidden state, is used again in the next loop to calculate the probability distribution of the next output token and so on. 
 
-('beam search' is another approach to look into at this part)
+('beam search' is another strategy that can be added to the model, but for simplicity's sake I am avoiding it.)
 
 The loop continues for 'output_len' no. of iterations. 
 
 Since I will be training sample to sample, I can dynamically send the output length 
-of the current sample, and the decoder loops for the given 'output length' times.
+of the current sample, and the decoder loops for the given 'output length' (the value will be stored in 'output_len placeholder) times.
 
-NOTE: I am saving only the (non-softmaxed) probability distributions for prediction. 
+NOTE: I am saving only the (non-softmaxed) probability distributions for prediction. Tensorflow cost function will internally apply softmax. 
 
 
 ```python
@@ -899,7 +899,7 @@ Some of the texts contains undesirable words like br tags and so
 on. So better preprocessing and tokenization may be desirable.
 
 With more layer depth, larger hidden size, mini-batch training,
-and other changes, this model may have potential, or may not.
+and other changes, this model may have potential.
 
 The same arcitechture should be usable for training on translation data.
 
