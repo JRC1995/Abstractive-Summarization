@@ -126,7 +126,7 @@ with open ('embd_limit', 'rb') as fp:
     
 ```
 
-Including SOS (signifies 'start of sentence'. It will be used as the initial input token for the decoder) and its vector to the vocbularies. I forgot to do this while pre-processing.
+Including SOS (signifies 'start of sentence'. It will be used as the initial input token for the decoder) and its vector to the vocbulary list and the embedding matrix. I forgot to do this while pre-processing.
 
 
 ```python
@@ -139,14 +139,14 @@ np_embd_limit = np.asarray(embd_limit,dtype=np.float32)
 
 ```
 
-### REMOVING DATA WITH SUMMARIES WHICH ARE TOO LONG
+### Removing data samples whose summaries are too long
 
-I will not be training the model in batches. I will train the model one sample at a time, because my old laptop
+I will not be training the model in mini-batches. I will train the model one sample at a time, because I fear my old laptop
 will probably not be able to handle batch training.
 
 Reducing data with high summary lengths will entail less maximum decoder timestep. This step is mainly taken to keep the training light. 
 
-### REMOVING DATA WITH TEXTS WHOSE LENGTH IS SMALLER THAN THE WINDOW SIZE
+### Removing data samples who text (review) length is less than the window size
 
 In this model I will try to implement <b>local attention</b> with the seq2seq architecture.
 
@@ -168,7 +168,7 @@ So we must choose D such that 2D+1 is not bigger than the length of any text in 
 To ensure that, I will first diagnose how many data will be removed for a given D, and in the next jupyter cell,
 I will remove all input texts whose length is less than 2D+1.
 
-### REMOVING DATA WITH TEXTS(REVIEWS) WHICH ARE TOO LONG
+### Removing data samples whose text (review) is too long 
 
 The RNN encoders will encode one word at a time. No. of words in the text data or in other words,
 the length of the text size will also be the no. of timesteps for the encoder RNN. To make the training less intensive 
@@ -337,12 +337,14 @@ that starts from the first word and encodes a word in the context of previous wo
 and then for the backward encoder (the LSTM in the backward direction
 that starts from the last word and encodes a word in the context of later words)
 
-The RNN used here, is a standard LSTM with RRA ([Residual Recurrent Attention](https://arxiv.org/abs/1709.03714))
+The RNN used here, is a standard LSTM with RRA (Recurrent Residual Attention)
+
+([RRA: Recurrent Residual Attention for Sequence Learning - Cheng Wang 	arXiv:1709.03714 [cs.LG]](https://arxiv.org/abs/1709.03714))
 
 The model will compute the weighted sum (weighted based on some trainable parameters
 in the attention weight matrix) of the PREVIOUS K (K is the hyperparameter mentioned before) hidden states - the weighted sum is denoted as RRA in this function.
 
-The last k indices of hidden_residuals will contain the last K hidden states.
+The last K indices of hidden_residuals will contain the last K hidden states.
 
 The RRA will influence the Hidden State calculation in LSTM.
 
@@ -351,6 +353,17 @@ the elements as said in the paper. But, here, I am normalizing it by softmax)
 
 The purpose for this is to create connections between hidden states of different timesteps,
 to establish long term dependencies.
+
+**UPDATE:** A LSTMN may better serve the purpose of RRA. 
+
+See: [Long Short-Term Memory-Networks for Machine Reading by Jianpeng Cheng, Li Dong and Mirella Lapata](https://arxiv.org/pdf/1601.06733.pdf)
+
+I had similar ideas here: https://github.com/JRC1995/INTER-INTRA-attentions
+
+
+**NOTE:** To implement RRA, I am using a dynamic tensorarray (kind of like a list but for tensorflow).
+The tensorarray (named hidden_residuals here) will contain ALL the past hidden states. New hidden states will be dynamically added to this tensorarray. 
+Initially the list start with K hidden_state shaped tensors with zeros in their last axis. Zeros, since initially there won't be any past hidden state except one zero-initialized one. After the initial timestep, new hidden state will be appended to the tensorarray, and from the next timestep, the last K indices of the tensorarray will be summed together to create the RRA. 
 
 
 ```python
@@ -493,7 +506,9 @@ Local attention mechanism involves focusing on a subset of encoded hidden states
 the encoded hidden states.
 
 This is the paper on which this implementation is based on:
-https://nlp.stanford.edu/pubs/emnlp15_attn.pdf
+
+[Effective Approaches to Attention-based Neural Machine Translation
+Minh-Thang Luong Hieu Pham Christopher D. Manning](https://nlp.stanford.edu/pubs/emnlp15_attn.pdf)
     
 Following the formulas presented in the paper, first, I am computing
 the position pt (the center of the window of attention).
@@ -547,12 +562,12 @@ Now, it can be checked that pt-D will never become negative, and pt+D will never
 the total sequence length.
 
 After calculating pt, we can use the formulas presented in the paper to calculate
-the G score which signifies the weight (or attention) that should be given to a hidden state.
+G (as written in the code below) constititues the attention or compatibility scores, i.e the weights (or attention) that should be given to a hidden state.
 
-G scores is calculated for each of hidden states in the local window. This is equivalent to
+G is calculated for each of hidden states in the local window. This is equivalent to
 the function 'a(s)' used in the paper.
 
-The function returns the G scores and the position pt, so that the model can create the 
+The function returns the attention weights in G and the position pt, so that the model can create the 
 context vector. 
 
 
