@@ -399,7 +399,7 @@ def forward_encoder(inp,hidden,cell,
         fg = tf.sigmoid( tf.matmul(x,wf) + tf.matmul(hidden,uf) + bf)
         ig = tf.sigmoid( tf.matmul(x,wi) + tf.matmul(hidden,ui) + bi)
         og = tf.sigmoid( tf.matmul(x,wo) + tf.matmul(hidden,uo) + bo)
-        cell = tf.multiply(fg,cell) + tf.multiply(ig,tf.sigmoid( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
+        cell = tf.multiply(fg,cell) + tf.multiply(ig,tf.tanh( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
         hidden = tf.multiply(og,tf.tanh(cell+RRA))
         
         hidden_residuals = tf.cond(tf.equal(j,seq_len-1+K),
@@ -452,7 +452,7 @@ def backward_encoder(inp,hidden,cell,
         fg = tf.sigmoid( tf.matmul(x,wf) + tf.matmul(hidden,uf) + bf)
         ig = tf.sigmoid( tf.matmul(x,wi) + tf.matmul(hidden,ui) + bi)
         og = tf.sigmoid( tf.matmul(x,wo) + tf.matmul(hidden,uo) + bo)
-        cell = tf.multiply(fg,cell) + tf.multiply(ig,tf.sigmoid( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
+        cell = tf.multiply(fg,cell) + tf.multiply(ig,tf.tanh( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
         hidden = tf.multiply(og,tf.tanh(cell+RRA))
 
         hidden_residuals = tf.cond(tf.equal(j,seq_len-1+K),
@@ -485,7 +485,7 @@ def decoder(x,hidden,cell,
     fg = tf.sigmoid( tf.matmul(x,wf) + tf.matmul(hidden,uf) + bf)
     ig = tf.sigmoid( tf.matmul(x,wi) + tf.matmul(hidden,ui) + bi)
     og = tf.sigmoid( tf.matmul(x,wo) + tf.matmul(hidden,uo) + bo)
-    cell_next = tf.multiply(fg,cell) + tf.multiply(ig,tf.sigmoid( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
+    cell_next = tf.multiply(fg,cell) + tf.multiply(ig,tf.tanh( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
     hidden_next = tf.multiply(og,tf.tanh(cell+RRA))
     
     return hidden_next,cell_next
