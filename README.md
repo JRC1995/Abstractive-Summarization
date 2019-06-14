@@ -203,7 +203,7 @@ Given a sequence of encoder states (H_s) and the decoder hidden state (H_t) of c
 
 Score = (H_s.W_a).Transpose(H_t)
 
-($W_a$ = trainable parameters)
+(W_a = trainable parameters)
 
 (https://nlp.stanford.edu/pubs/emnlp15_attn.pdf)
 
