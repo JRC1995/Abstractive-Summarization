@@ -1,1304 +1,1363 @@
 
 # Abstractive Summarization
 
-Loading pre-trained GloVe embeddings.
-Source of Data: https://nlp.stanford.edu/projects/glove/
+### Loading Pre-processed Dataset
 
-Another interesting embedding to look into:
-https://github.com/commonsense/conceptnet-numberbatch
-
-
-```python
-import numpy as np
-from __future__ import division
-
-filename = 'glove.6B.50d.txt'
-def loadGloVe(filename):
-    vocab = []
-    embd = []
-    file = open(filename,'r')
-    for line in file.readlines():
-        row = line.strip().split(' ')
-        vocab.append(row[0])
-        embd.append(row[1:])
-    print('Loaded GloVe!')
-    file.close()
-    return vocab,embd
-vocab,embd = loadGloVe(filename)
-
-embedding = np.asarray(embd)
-embedding = embedding.astype(np.float32)
-
-word_vec_dim = len(embedding[0])
-#Pre-trained GloVe embedding
-```
-
-    Loaded GloVe!
-
-
-Here, I will define functions for converting words to their vector representations, and vice versa. 
-
-### word2vec: 
-
-Converts words to their vector representations.
-If a word is not present in the vocabulary, and thus if it doesn't have any vector representation,
-the word will be considered as 'unk' (denotes unknown) and the vector representation of unk will be
-returned instead. Note: It has nothing to do with 'word2vec' embedding. 
-
-### np_nearest_neighbour:
-
-Returns the word vector in the vocabularity that is most similar
-to word vector given as an argument. The similarity is evaluated based on the formula of cosine
-similarity. 
-
-### vec2word: 
-
-Converts vectors to words. If the vector representation is unknown, and no corresponding word
-is known, then it returns the word representation of a known vector representation which is most similar 
-to the vector given as argument (the np_nearest_neighbour() function is used for that).
-
-
-
-```python
-def np_nearest_neighbour(x):
-    #returns array in embedding that's most similar (in terms of cosine similarity) to x
-        
-    xdoty = np.multiply(embedding,x)
-    xdoty = np.sum(xdoty,1)
-    xlen = np.square(x)
-    xlen = np.sum(xlen,0)
-    xlen = np.sqrt(xlen)
-    ylen = np.square(embedding)
-    ylen = np.sum(ylen,1)
-    ylen = np.sqrt(ylen)
-    xlenylen = np.multiply(xlen,ylen)
-    cosine_similarities = np.divide(xdoty,xlenylen)
-
-    return embedding[np.argmax(cosine_similarities)]
-
-
-def word2vec(word):  # converts a given word into its vector representation
-    if word in vocab:
-        return embedding[vocab.index(word)]
-    else:
-        return embedding[vocab.index('unk')]
-
-def vec2word(vec):   # converts a given vector representation into the represented word 
-    for x in xrange(0, len(embedding)):
-        if np.array_equal(embedding[x],np.asarray(vec)):
-            return vocab[x]
-    return vec2word(np_nearest_neighbour(np.asarray(vec)))
-```
-
-### Loading pre-processed dataset
-
-The Data is preprocessed in [Data_Pre-processing.ipynb](https://github.com/JRC1995/Abstractive-Summarization/blob/master/Data%20Pre-processing.ipynb)
+The Data is preprocessed in [Data_Pre-Processing.ipynb](https://github.com/JRC1995/Abstractive-Summarization/blob/master/Data%20Pre-processing.ipynb)
 
 Dataset source: https://www.kaggle.com/snap/amazon-fine-food-reviews
 
 
 ```python
-import pickle
+import json
 
-with open ('vec_summaries', 'rb') as fp:
-    vec_summaries = pickle.load(fp)
+with open('Processed_Data/Amazon_Reviews_Processed.json') as file:
 
-with open ('vec_texts', 'rb') as fp:
-    vec_texts = pickle.load(fp)
-    
+    for json_data in file:
+        saved_data = json.loads(json_data)
+
+        vocab2idx = saved_data["vocab"]
+        embd = saved_data["embd"]
+        train_batches_text = saved_data["train_batches_text"]
+        test_batches_text = saved_data["test_batches_text"]
+        val_batches_text = saved_data["val_batches_text"]
+        train_batches_summary = saved_data["train_batches_summary"]
+        test_batches_summary = saved_data["test_batches_summary"]
+        val_batches_summary = saved_data["val_batches_summary"]
+        train_batches_true_text_len = saved_data["train_batches_true_text_len"]
+        val_batches_true_text_len = saved_data["val_batches_true_text_len"]
+        test_batches_true_text_len = saved_data["test_batches_true_text_len"]
+        train_batches_true_summary_len = saved_data["train_batches_true_summary_len"]
+        val_batches_true_summary_len = saved_data["val_batches_true_summary_len"]
+        test_batches_true_summary_len = saved_data["test_batches_true_summary_len"]
+
+        break
+        
+idx2vocab = {v:k for k,v in vocab2idx.items()}
 ```
 
-Here, I am Loading vocab_limit and embd_limit.
-Vocab_limit contains only the words that are present in the dataset, along
-some special words representing markers for EOS, PAD etc.
-
-The network should output the probability distribution over the words in 
-vocab_limit. So using limited vocabulary (vocab_limit) will mean requiring
-less parameters for calculating the probability distribution as compared to using the complete vocabulary from gloVe dataset.
+## Hyperparameters
 
 
 ```python
-with open ('vocab_limit', 'rb') as fp:
-    vocab_limit = pickle.load(fp)
-
-with open ('embd_limit', 'rb') as fp:
-    embd_limit = pickle.load(fp)
-    
+hidden_size = 300
+learning_rate = 0.001
+epochs = 5
+max_summary_len = 16
+D = 5 # D determines local attention window size
+window_len = 2*D+1
+l2=1e-6
 ```
 
-Including SOS (signifies 'start of sentence'. It will be used as the initial input token for the decoder) and its vector to the vocbulary list and the embedding matrix. I forgot to do this while pre-processing.
+## Tensorflow Placeholders
 
 
 ```python
-vocab_limit.append('<SOS>')
-embd_limit.append(np.zeros((word_vec_dim),dtype=np.float32))
+import tensorflow as tf 
 
-SOS = embd_limit[vocab_limit.index('<SOS>')]
+embd_dim = len(embd[0])
 
-np_embd_limit = np.asarray(embd_limit,dtype=np.float32)
-
+tf_text = tf.placeholder(tf.int32, [None, None])
+tf_embd = tf.placeholder(tf.float32, [len(vocab2idx),embd_dim])
+tf_true_summary_len = tf.placeholder(tf.int32, [None])
+tf_summary = tf.placeholder(tf.int32,[None, None])
+tf_train = tf.placeholder(tf.bool)
 ```
 
-### Removing data samples whose summaries are too long
+## Embed vectorized text
 
-I will not be training the model in mini-batches. I will train the model one sample at a time, because I fear my old laptop
-will probably not be able to handle batch training.
-
-Reducing data with high summary lengths will entail less maximum decoder timestep. This step is mainly taken to keep the training light. 
-
-### Removing data samples who text (review) length is less than the window size
-
-In this model I will try to implement <b>local attention</b> with the seq2seq architecture.
-
-Where global attention looks at all the hidden states of the encoder to determine where to attend to,
-local attention looks only at the hidden states under the range pt-D to pt+D where D is empirically selected
-and pt is a position determined by the program.
-
-The range of pt-D to pt+D can be said to be the window where attention takes place.  Pt is the center of the
-window.
-
-I am treating D as a hyperparameter. The window size will be (pt-D)-(pt+D)+1 = 2D+1.
-
-Now, the window needs to be smaller than or equal to the no. of the encoded hidden states themselves.
-We will encode one hidden state for each words in the input text, so size of the hidden states will be equivalent
-to the size of the input text.
-
-So we must choose D such that 2D+1 is not bigger than the length of any text in the dataset.
-
-To ensure that, I will first diagnose how many data will be removed for a given D, and in the next jupyter cell,
-I will remove all input texts whose length is less than 2D+1.
-
-### Removing data samples whose text (review) is too long 
-
-The RNN encoders will encode one word at a time. No. of words in the text data or in other words,
-the length of the text size will also be the no. of timesteps for the encoder RNN. To make the training less intensive 
-(so that it doesn't burden my laptop too much), I will be removing
-all data with whose review size exceeds a given threshold (MAX_TEXT_LEN).
-
+Dropout used for regularization 
+(https://www.cs.toronto.edu/~hinton/absps/JMLRdropout.pdf)
 
 
 ```python
-#DIAGNOSIS
-
-count = 0
-
-LEN = 7
-
-for summary in vec_summaries:
-    if len(summary)-1>LEN:
-        count = count + 1
-print "Percentage of dataset with summary length beyond "+str(LEN)+": "+str((count/len(vec_summaries))*100)+"% "
-
-count = 0
-
-D = 10 
-
-window_size = 2*D+1
-
-for text in vec_texts:
-    if len(text)<window_size+1:
-        count = count + 1
-print "Percentage of dataset with text length less that window size: "+str((count/len(vec_texts))*100)+"% "
-
-count = 0
-
-LEN = 80
-
-for text in vec_texts:
-    if len(text)>LEN:
-        count = count + 1
-print "Percentage of dataset with text length more than "+str(LEN)+": "+str((count/len(vec_texts))*100)+"% "
+embd_text = tf.nn.embedding_lookup(tf_embd, tf_text)
+embd_text = tf.layers.dropout(embd_text,rate=0.3,training=tf_train)
 ```
 
-    Percentage of dataset with summary length beyond 7: 16.146% 
-    Percentage of dataset with text length less that window size: 2.258% 
-    Percentage of dataset with text length more than 80: 40.412% 
+## LSTM function
 
-
-Here I will start the aformentioned removal process.
-vec_summary_reduced and vec_texts_reduced will contain the remaining data after the removal.
-
-<b>Note: an important hyperparameter D is initialized here.</b>
-
-D determines the window size of local attention as mentioned before.
+More info: 
+<br>
+https://dl.acm.org/citation.cfm?id=1246450, 
+<br>
+https://www.bioinf.jku.at/publications/older/2604.pdf,
+<br>
+https://en.wikipedia.org/wiki/Long_short-term_memory
 
 
 ```python
-MAX_SUMMARY_LEN = 7
-MAX_TEXT_LEN = 80
-
-#D is a major hyperparameters. Windows size for local attention will be 2*D+1
-D = 10
-
-window_size = 2*D+1
-
-#REMOVE DATA WHOSE SUMMARIES ARE TOO BIG
-#OR WHOSE TEXT LENGTH IS TOO BIG
-#OR WHOSE TEXT LENGTH IS SMALLED THAN WINDOW SIZE
-
-vec_summaries_reduced = []
-vec_texts_reduced = []
-
-i = 0
-for summary in vec_summaries:
-    if len(summary)-1<=MAX_SUMMARY_LEN and len(vec_texts[i])>=window_size and len(vec_texts[i])<=MAX_TEXT_LEN:
-        vec_summaries_reduced.append(summary)
-        vec_texts_reduced.append(vec_texts[i])
-    i=i+1
+def LSTM(x,hidden_state,cell,input_dim,hidden_size,scope):
+    
+    with tf.variable_scope(scope,reuse=tf.AUTO_REUSE):
+        
+        w = tf.get_variable("w", shape=[4,input_dim,hidden_size],
+                                    dtype=tf.float32,
+                                    trainable=True,
+                                    initializer=tf.glorot_uniform_initializer())
+        
+        u = tf.get_variable("u", shape=[4,hidden_size,hidden_size],
+                            dtype=tf.float32,
+                            trainable=True,
+                            initializer=tf.glorot_uniform_initializer())
+        
+        b = tf.get_variable("bias", shape=[4,1,hidden_size],
+                    dtype=tf.float32,
+                    trainable=True,
+                    initializer=tf.zeros_initializer())
+        
+    input_gate = tf.nn.sigmoid( tf.matmul(x,w[0]) + tf.matmul(hidden_state,u[0]) + b[0])
+    forget_gate = tf.nn.sigmoid( tf.matmul(x,w[1]) + tf.matmul(hidden_state,u[1]) + b[1])
+    output_gate = tf.nn.sigmoid( tf.matmul(x,w[2]) + tf.matmul(hidden_state,u[2]) + b[2])
+    cell_ = tf.nn.tanh( tf.matmul(x,w[3]) + tf.matmul(hidden_state,u[3]) + b[3])
+    cell = forget_gate*cell + input_gate*cell_
+    hidden_state = output_gate*tf.tanh(cell)
+    
+    return hidden_state, cell
+      
 ```
 
-Creating train, validation and test batches.
+## Bi-Directional LSTM Encoder
+
+(https://maxwell.ict.griffith.edu.au/spl/publications/papers/ieeesp97_schuster.pdf)
+
+More Info: https://machinelearningmastery.com/develop-bidirectional-lstm-sequence-classification-python-keras/
+
+Bi-directional LSTM encoder has a forward encoder and a backward encoder. The forward encoder encodes a text sequence from start to end, and the backward encoder encodes the text sequence from end to start.
+The final output is a combination (in this case, a concatenation) of the forward encoded text and the backward encoded text
+    
+
+
+## Forward Encoding
 
 
 ```python
-train_len = int((.7)*len(vec_summaries_reduced))
-
-train_texts = vec_texts_reduced[0:train_len]
-train_summaries = vec_summaries_reduced[0:train_len]
-
-val_len = int((.15)*len(vec_summaries_reduced))
-
-val_texts = vec_texts_reduced[train_len:train_len+val_len]
-val_summaries = vec_summaries_reduced[train_len:train_len+val_len]
-
-test_texts = vec_texts_reduced[train_len+val_len:len(vec_summaries_reduced)]
-test_summaries = vec_summaries_reduced[train_len+val_len:len(vec_summaries_reduced)]
-```
-
-
-```python
-print train_len
-```
-
-    18293
-
-
-The function transform_out() will convert the target output sample so that 
-it can be in a format which can be used by tensorflow's 
-sparse_softmax_cross_entropy_with_logits() for loss calculation.
-
-This transformation will be like one hot encoding, but somewhat different. 
-
-Instead of being precisely one hot encoded the output will be transformed
-such that it will contain the list of indices which would have been 'one' if it was one hot encoded.
-
-Each word in vocab_limit will be considered as different classes here. 
-
-
-```python
-def transform_out(output_text):
-    output_len = len(output_text)
-    transformed_output = np.zeros([output_len],dtype=np.int32)
-    for i in xrange(0,output_len):
-        transformed_output[i] = vocab_limit.index(vec2word(output_text[i]))
-    return transformed_output   
-```
-
-### Hyperparameters
-
-Here I am simply setting up some of the rest of the hyperparameters.
-K, here, is a special hyperparameter. It denotes the no. of previous hidden states
-to consider for residual connections (elaborated later on)
-
-
-```python
-#Some MORE hyperparameters and other stuffs
-
-hidden_size = 500
-learning_rate = 0.003
-K = 5
-vocab_len = len(vocab_limit)
-training_iters = 5 
-```
-
-Setting up tensorflow placeholders.
-The purpose of the placeholders are pretty much self explanatory from the name.
-
-Note: tf_seq_len, and tf_output_len aren't really necessary. They can be derived 
-from tf_text and tf_summary respectively, but I ended up making them anyway.
-
-
-```python
-import tensorflow as tf
-
-#placeholders
-tf_text = tf.placeholder(tf.float32, [None,word_vec_dim])
-tf_seq_len = tf.placeholder(tf.int32)
-tf_summary = tf.placeholder(tf.int32,[None])
-tf_output_len = tf.placeholder(tf.int32)
-```
-
-### FORWARD AND BACKWARD LSTM WITH RRA
-
-I will be using the encoder-decoder architecture.
-For the encoder I will be using a bi-directional LSTM.
-Below is the function of the forward encoder (the LSTM in the forward direction
-that starts from the first word and encodes a word in the context of previous words),
-and then for the backward encoder (the LSTM in the backward direction
-that starts from the last word and encodes a word in the context of later words)
-
-The RNN used here, is a standard LSTM with RRA (Recurrent Residual Attention)
-
-([RRA: Recurrent Residual Attention for Sequence Learning - Cheng Wang 	arXiv:1709.03714 [cs.LG]](https://arxiv.org/abs/1709.03714))
-
-The model will compute the weighted sum (weighted based on some trainable parameters
-in the attention weight matrix) of the PREVIOUS K (K is the hyperparameter mentioned before) hidden states - the weighted sum is denoted as RRA in this function.
-
-The last K indices of hidden_residuals will contain the last K hidden states.
-
-The RRA will influence the Hidden State calculation in LSTM.
-
-(The attention weight matrix is to be normalized by dividing each elements by the sum of all 
-the elements as said in the paper. But, here, I am normalizing it by softmax)
-
-The purpose for this is to create connections between hidden states of different timesteps,
-to establish long term dependencies.
-
-**UPDATE:** A LSTMN may better serve the purpose of RRA. 
-
-See: [Long Short-Term Memory-Networks for Machine Reading by Jianpeng Cheng, Li Dong and Mirella Lapata](https://arxiv.org/pdf/1601.06733.pdf)
-
-I had similar ideas here: https://github.com/JRC1995/INTER-INTRA-attentions
-
-
-**NOTE:** To implement RRA, I am using a dynamic tensorarray (kind of like a list but for tensorflow).
-The tensorarray (named hidden_residuals here) will contain ALL the past hidden states. New hidden states will be dynamically added to this tensorarray. 
-Initially the list start with K hidden_state shaped tensors with zeros in their last axis. Zeros, since initially there won't be any past hidden state except one zero-initialized one. After the initial timestep, new hidden state will be appended to the tensorarray, and from the next timestep, the last K indices of the tensorarray will be summed together to create the RRA. 
-
-
-```python
-def forward_encoder(inp,hidden,cell,
-                    wf,uf,bf,
-                    wi,ui,bi,
-                    wo,uo,bo,
-                    wc,uc,bc,
-                    Wattention,seq_len,inp_dim):
-
-    Wattention = tf.nn.softmax(Wattention,0)
-    hidden_forward = tf.TensorArray(size=seq_len,dtype=tf.float32)
-    
-    hidden_residuals = tf.TensorArray(size=K,dynamic_size=True,dtype=tf.float32,clear_after_read=False)
-    hidden_residuals = hidden_residuals.unstack(tf.zeros([K,hidden_size],dtype=tf.float32))
-    
-    i=0
-    j=K
-    
-    def cond(i,j,hidden,cell,hidden_forward,hidden_residuals):
-        return i < seq_len
-    
-    def body(i,j,hidden,cell,hidden_forward,hidden_residuals):
-        
-        x = tf.reshape(inp[i],[1,inp_dim])
-        
-        hidden_residuals_stack = hidden_residuals.stack()
-        
-        RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention),0)
-        RRA = tf.reshape(RRA,[1,hidden_size])
-        
-        # LSTM with RRA
-        fg = tf.sigmoid( tf.matmul(x,wf) + tf.matmul(hidden,uf) + bf)
-        ig = tf.sigmoid( tf.matmul(x,wi) + tf.matmul(hidden,ui) + bi)
-        og = tf.sigmoid( tf.matmul(x,wo) + tf.matmul(hidden,uo) + bo)
-        cell = tf.multiply(fg,cell) + tf.multiply(ig,tf.tanh( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
-        hidden = tf.multiply(og,tf.tanh(cell+RRA))
-        
-        hidden_residuals = tf.cond(tf.equal(j,seq_len-1+K),
-                                   lambda: hidden_residuals,
-                                   lambda: hidden_residuals.write(j,tf.reshape(hidden,[hidden_size])))
-
-        hidden_forward = hidden_forward.write(i,tf.reshape(hidden,[hidden_size]))
-        
-        return i+1,j+1,hidden,cell,hidden_forward,hidden_residuals
-    
-    _,_,_,_,hidden_forward,hidden_residuals = tf.while_loop(cond,body,[i,j,hidden,cell,hidden_forward,hidden_residuals])
-    
-    hidden_residuals.close().mark_used()
-    
-    return hidden_forward.stack()
-        
-```
-
-
-```python
-def backward_encoder(inp,hidden,cell,
-                     wf,uf,bf,
-                     wi,ui,bi,
-                     wo,uo,bo,
-                     wc,uc,bc,
-                     Wattention,seq_len,inp_dim):
-    
-    Wattention = tf.nn.softmax(Wattention,0)
-    hidden_backward = tf.TensorArray(size=seq_len,dtype=tf.float32)
-    
-    hidden_residuals = tf.TensorArray(size=K,dynamic_size=True,dtype=tf.float32,clear_after_read=False)
-    hidden_residuals = hidden_residuals.unstack(tf.zeros([K,hidden_size],dtype=tf.float32))
-    
-    i=seq_len-1
-    j=K
-    
-    def cond(i,j,hidden,cell,hidden_backward,hidden_residuals):
-        return i > -1
-    
-    def body(i,j,hidden,cell,hidden_backward,hidden_residuals):
-        
-        x = tf.reshape(inp[i],[1,inp_dim])
-        
-        hidden_residuals_stack = hidden_residuals.stack()
-        
-        RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention),0)
-        RRA = tf.reshape(RRA,[1,hidden_size])
-        
-        # LSTM with RRA
-        fg = tf.sigmoid( tf.matmul(x,wf) + tf.matmul(hidden,uf) + bf)
-        ig = tf.sigmoid( tf.matmul(x,wi) + tf.matmul(hidden,ui) + bi)
-        og = tf.sigmoid( tf.matmul(x,wo) + tf.matmul(hidden,uo) + bo)
-        cell = tf.multiply(fg,cell) + tf.multiply(ig,tf.tanh( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
-        hidden = tf.multiply(og,tf.tanh(cell+RRA))
-
-        hidden_residuals = tf.cond(tf.equal(j,seq_len-1+K),
-                                   lambda: hidden_residuals,
-                                   lambda: hidden_residuals.write(j,tf.reshape(hidden,[hidden_size])))
-        
-        hidden_backward = hidden_backward.write(i,tf.reshape(hidden,[hidden_size]))
-        
-        return i-1,j+1,hidden,cell,hidden_backward,hidden_residuals
-    
-    _,_,_,_,hidden_backward,hidden_residuals = tf.while_loop(cond,body,[i,j,hidden,cell,hidden_backward,hidden_residuals])
-
-    hidden_residuals.close().mark_used()
-    
-    return hidden_backward.stack()
-        
-```
-
-The decoder similarly uses LSTM with RRA
-
-
-```python
-def decoder(x,hidden,cell,
-            wf,uf,bf,
-            wi,ui,bi,
-            wo,uo,bo,
-            wc,uc,bc,RRA):
-    
-    # LSTM with RRA
-    fg = tf.sigmoid( tf.matmul(x,wf) + tf.matmul(hidden,uf) + bf)
-    ig = tf.sigmoid( tf.matmul(x,wi) + tf.matmul(hidden,ui) + bi)
-    og = tf.sigmoid( tf.matmul(x,wo) + tf.matmul(hidden,uo) + bo)
-    cell_next = tf.multiply(fg,cell) + tf.multiply(ig,tf.tanh( tf.matmul(x,wc) + tf.matmul(hidden,uc) + bc))
-    hidden_next = tf.multiply(og,tf.tanh(cell+RRA))
-    
-    return hidden_next,cell_next
-```
-
-### LOCAL ATTENTION:
-
-The cell below includes some major functions for the attention mechanism.
-
-The attention mechanism is usually implemented to compute an attention score 
-for each of the encoded hidden state in the context of a particular
-decoder hidden state in each timestep - all to determine which encoded hidden
-states to attend to, given the context of a particular decoder hidden state.
-
-More specifically, I am here implementing local attention as opposed to global attention.
-
-Local attention mechanism involves focusing on a subset of encoded hidden states, whereas a gloabl attention mechanism invovles focusing on all
-the encoded hidden states.
-
-This is the paper on which this implementation is based on:
-
-[Effective Approaches to Attention-based Neural Machine Translation
-Minh-Thang Luong Hieu Pham Christopher D. Manning](https://nlp.stanford.edu/pubs/emnlp15_attn.pdf)
-    
-Following the formulas presented in the paper, first, I am computing
-the position pt (the center of the window of attention).
-
-pt is simply a position in the sequence.
-For a given pt, the model will only consider the hidden state starting from the position
-pt-D to the hidden state at the position pt+D. 
-
-To say a hidden state is at position pt, I mean to say that the hidden state is the encoded
-representation of a word at position pt in the sequence.
-
-The paper formulates the equation for calculating pt like this:
-pt = sequence_length x sigmoid(..some linear algebras and activations...)
-
-But, I didn't used the sequence_length of the whole text which is tf_seq_len but 'positions' which
-is = tf_seq_len-1-2D
-
-if pt = tf_seq_len x sigmoid(tensor)
-
-Then pt will be in the range 0 to tf_seq_len
-
-But, there is no 'tf_seq_len' position, since the length is tf_seq_len,
-the available positions are 0 to (tf_seq_len-1). This is why I subtracted 1 from it.
-
-Next, we must have the value of pt such that it represents the CENTER of the window of size 2D+1.
-
-So the window begin at pt-D and end at pt+D, if pt has to be the center. 
-
-However, if pt is too close to 0, pt-D will be negative - a non-existent position.
-
-And, If pt is too close to tf_seq_len, pt+D will become a non-existent position beyond the maximum sequence length.
-
-So pt can't occupy the first D positions (0 to D-1) and it can't occupy the last D positions
-((tf_seq_len-D) to (tf_seq_len-1)), if pt-D and pt+D has to be considered as legal positions.
-So a total 2D positions should be restricted to pt.
-
-Which is why I further subtracted 2D from tf_seq_len.
-
-Still, after calculating pt = positions x sigmoid(tensor)
-where positions = tf_seq_len-1-2D or tf_seq_len-(2D+1), 
-pt will merely range between 0 to tf_seq_len-(2D+1)
-
-We can't still accept pt to be 0 since pt-D will be negative. But the length of the range 
-of integer positions pt can occupy is now accurate.
-
-So at this point, we can simply center pt at the window by adding a D.
-
-After that, pt will range from D to (tf_seq_len-1)-D
-
-Now, it can be checked that pt-D will never become negative, and pt+D will never exceed
-the total sequence length.
-
-After calculating pt, we can use the formulas presented in the paper to calculate
-G (as written in the code below) constititues the attention or compatibility scores, i.e the weights (or attention) that should be given to a hidden state.
-
-G is calculated for each of hidden states in the local window. This is equivalent to
-the function 'a(s)' used in the paper.
-
-The function returns the attention weights in G and the position pt, so that the model can create the 
-context vector. 
-
-
-
-```python
-def score(hs,ht,Wa,seq_len):
-    return tf.reshape(tf.matmul(tf.matmul(hs,Wa),tf.transpose(ht)),[seq_len])
-
-def align(hs,ht,Wp,Vp,Wa,tf_seq_len):
-   
-    pd = tf.TensorArray(size=(2*D+1),dtype=tf.float32)
-    
-    positions = tf.cast(tf_seq_len-1-2*D,dtype=tf.float32)
-    
-    sigmoid_multiplier = tf.nn.sigmoid(tf.matmul(tf.tanh(tf.matmul(ht,Wp)),Vp))
-    sigmoid_multiplier = tf.reshape(sigmoid_multiplier,[])
-    
-    pt_float = positions*sigmoid_multiplier
-    
-    pt = tf.cast(pt_float,tf.int32)
-    pt = pt+D #center to window
-    
-    sigma = tf.constant(D/2,dtype=tf.float32)
-    
-    i = 0
-    pos = pt - D
-    
-    def cond(i,pos,pd):
-        
-        return i < (2*D+1)
-                      
-    def body(i,pos,pd):
-        
-        comp_1 = tf.cast(tf.square(pos-pt),tf.float32)
-        comp_2 = tf.cast(2*tf.square(sigma),tf.float32)
-            
-        pd = pd.write(i,tf.exp(-(comp_1/comp_2)))
-            
-        return i+1,pos+1,pd
-                      
-    i,pos,pd = tf.while_loop(cond,body,[i,pos,pd])
-    
-    local_hs = hs[(pt-D):(pt+D+1)]
-    
-    normalized_scores = tf.nn.softmax(score(local_hs,ht,Wa,2*D+1))
-    
-    pd=pd.stack()
-    
-    G = tf.multiply(normalized_scores,pd)
-    G = tf.reshape(G,[2*D+1,1])
-    
-    return G,pt
-
-```
-
-### MODEL DEFINITION
-
-First is the <b>bi-directional encoder</b>.
-
-h_forward is the tensorarray of all the hidden states from the 
-forward encoder whereas h_backward is the tensorarray of all the hidden states
-from the backward encoder.
-
-The final list of encoder hidden states are usually calculated by combining 
-the equivalents of h_forward and h_backward by some means.
-
-There are many means of combining them, like: concatenation, summation, average etc.
-    
-I will be using concatenation.
-
-hidden_encoder is the final list of encoded hidden states.
-
-The first decoder input is the word vector representation of <SOS> which siginfies the start of decoding.
-
-I am using the first encoded_hidden_state 
-as the initial decoder hidden state. The first encoded_hidden_state may have the least 
-past context (none actually) but, it will have the most future context.
-
-The next decoder hidden state is generated from the initial decoder input and the initial decoder state.
-Next, I start a loop which iterates for output_len times. 
-
-Next the <b>attention function</b> is called, to compute the G score by scoring the encoder hidden states
-in term of current decoder hidden step.
-
-The context vector is created by the weighted (weighted in terms of G scores) summation
-of hidden states in the local attention window.
-
-I used the formulas mentioned here: https://nlp.stanford.edu/pubs/emnlp15_attn.pdf
-
-to calculate the probability distribution for the first output token from the context vector and decoder hidden state.
-
-The word vector represention of the output token - the word with maximum the predicted probability in the recently calculated probability distribution, is used as the decoder input token. The output decoder hidden state from that current decoder input token, and the hidden state, is used again in the next loop to calculate the probability distribution of the next output token and so on. 
-
-('beam search' is another strategy that can be added to the model, but for simplicity's sake I am avoiding it.)
-
-The loop continues for 'output_len' no. of iterations. 
-
-Since I will be training sample to sample, I can dynamically send the output length 
-of the current sample, and the decoder loops for the given 'output length' (the value will be stored in 'output_len placeholder) times.
-
-NOTE: I am saving only the (non-softmaxed) probability distributions for prediction. Tensorflow cost function will internally apply softmax. 
-
-
-```python
-def model(tf_text,tf_seq_len,tf_output_len):
-    
-    #PARAMETERS
-    
-    #1.1 FORWARD ENCODER PARAMETERS
-    
-    initial_hidden_f = tf.zeros([1,hidden_size],dtype=tf.float32)
-    cell_f = tf.zeros([1,hidden_size],dtype=tf.float32)
-    wf_f = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
-    uf_f = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    bf_f = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
-    wi_f = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
-    ui_f = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    bi_f = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
-    wo_f = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
-    uo_f = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    bo_f = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
-    wc_f = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
-    uc_f = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    bc_f = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
-    Wattention_f = tf.Variable(tf.zeros([K,1]),dtype=tf.float32)
-                               
-    #1.2 BACKWARD ENCODER PARAMETERS
-    
-    initial_hidden_b = tf.zeros([1,hidden_size],dtype=tf.float32)
-    cell_b = tf.zeros([1,hidden_size],dtype=tf.float32)
-    wf_b = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
-    uf_b = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    bf_b = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
-    wi_b = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
-    ui_b = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    bi_b = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
-    wo_b = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
-    uo_b = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    bo_b = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
-    wc_b = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,hidden_size],stddev=0.01))
-    uc_b = tf.Variable(np.eye(hidden_size),dtype=tf.float32)
-    bc_b = tf.Variable(tf.zeros([1,hidden_size]),dtype=tf.float32)
-    Wattention_b = tf.Variable(tf.zeros([K,1]),dtype=tf.float32)
-    
-    #2 ATTENTION PARAMETERS
-    
-    Wp = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,50],stddev=0.01))
-    Vp = tf.Variable(tf.truncated_normal(shape=[50,1],stddev=0.01))
-    Wa = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,2*hidden_size],stddev=0.01))
-    Wc = tf.Variable(tf.truncated_normal(shape=[4*hidden_size,2*hidden_size],stddev=0.01))
-    
-    #3 DECODER PARAMETERS
-    
-    Ws = tf.Variable(tf.truncated_normal(shape=[2*hidden_size,vocab_len],stddev=0.01))
-    
-    cell_d = tf.zeros([1,2*hidden_size],dtype=tf.float32)
-    wf_d = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,2*hidden_size],stddev=0.01))
-    uf_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
-    bf_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
-    wi_d = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,2*hidden_size],stddev=0.01))
-    ui_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
-    bi_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
-    wo_d = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,2*hidden_size],stddev=0.01))
-    uo_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
-    bo_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
-    wc_d = tf.Variable(tf.truncated_normal(shape=[word_vec_dim,2*hidden_size],stddev=0.01))
-    uc_d = tf.Variable(np.eye(2*hidden_size),dtype=tf.float32)
-    bc_d = tf.Variable(tf.zeros([1,2*hidden_size]),dtype=tf.float32)
-    
-    hidden_residuals_d = tf.TensorArray(size=K,dynamic_size=True,dtype=tf.float32,clear_after_read=False)
-    hidden_residuals_d = hidden_residuals_d.unstack(tf.zeros([K,2*hidden_size],dtype=tf.float32))
-    
-    Wattention_d = tf.Variable(tf.zeros([K,1]),dtype=tf.float32)
-    
-    output = tf.TensorArray(size=tf_output_len,dtype=tf.float32)
-                               
-    #BI-DIRECTIONAL LSTM
-                               
-    hidden_forward = forward_encoder(tf_text,
-                                     initial_hidden_f,cell_f,
-                                     wf_f,uf_f,bf_f,
-                                     wi_f,ui_f,bi_f,
-                                     wo_f,uo_f,bo_f,
-                                     wc_f,uc_f,bc_f,
-                                     Wattention_f,
-                                     tf_seq_len,
-                                     word_vec_dim)
-    
-    hidden_backward = backward_encoder(tf_text,
-                                     initial_hidden_b,cell_b,
-                                     wf_b,uf_b,bf_b,
-                                     wi_b,ui_b,bi_b,
-                                     wo_b,uo_b,bo_b,
-                                     wc_b,uc_b,bc_b,
-                                     Wattention_b,
-                                     tf_seq_len,
-                                     word_vec_dim)
-    
-    encoded_hidden = tf.concat([hidden_forward,hidden_backward],1)
-    
-    #ATTENTION MECHANISM AND DECODER
-    
-    decoded_hidden = encoded_hidden[0]
-    decoded_hidden = tf.reshape(decoded_hidden,[1,2*hidden_size])
-    Wattention_d_normalized = tf.nn.softmax(Wattention_d)
-    tf_embd_limit = tf.convert_to_tensor(np_embd_limit)
-    
-    y = tf.convert_to_tensor(SOS) #inital decoder token <SOS> vector
-    y = tf.reshape(y,[1,word_vec_dim])
-    
-    j=K
-    
-    hidden_residuals_stack = hidden_residuals_d.stack()
-    
-    RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention_d_normalized),0)
-    RRA = tf.reshape(RRA,[1,2*hidden_size])
-    
-    decoded_hidden_next,cell_d = decoder(y,decoded_hidden,cell_d,
-                                  wf_d,uf_d,bf_d,
-                                  wi_d,ui_d,bf_d,
-                                  wo_d,uo_d,bf_d,
-                                  wc_d,uc_d,bc_d,
-                                  RRA)
-    decoded_hidden = decoded_hidden_next
-    
-    hidden_residuals_d = hidden_residuals_d.write(j,tf.reshape(decoded_hidden,[2*hidden_size]))
-    
-    j=j+1
-                           
-    i=0
-    
-    def attention_decoder_cond(i,j,decoded_hidden,cell_d,hidden_residuals_d,output):
-        return i < tf_output_len
-    
-    def attention_decoder_body(i,j,decoded_hidden,cell_d,hidden_residuals_d,output):
-        
-        #LOCAL ATTENTION
-        
-        G,pt = align(encoded_hidden,decoded_hidden,Wp,Vp,Wa,tf_seq_len)
-        local_encoded_hidden = encoded_hidden[pt-D:pt+D+1]
-        weighted_encoded_hidden = tf.multiply(local_encoded_hidden,G)
-        context_vector = tf.reduce_sum(weighted_encoded_hidden,0)
-        context_vector = tf.reshape(context_vector,[1,2*hidden_size])
-        
-        attended_hidden = tf.tanh(tf.matmul(tf.concat([context_vector,decoded_hidden],1),Wc))
-        
-        #DECODER
-        
-        y = tf.matmul(attended_hidden,Ws)
-        
-        output = output.write(i,tf.reshape(y,[vocab_len]))
-        #Save probability distribution as output
-        
-        y = tf.nn.softmax(y)
-        
-        y_index = tf.cast(tf.argmax(tf.reshape(y,[vocab_len])),tf.int32)
-        y = tf_embd_limit[y_index]
-        y = tf.reshape(y,[1,word_vec_dim])
-        
-        #setting next decoder input token as the word_vector of maximum probability 
-        #as found from previous attention-decoder output.
-        
-        hidden_residuals_stack = hidden_residuals_d.stack()
-        
-        RRA = tf.reduce_sum(tf.multiply(hidden_residuals_stack[j-K:j],Wattention_d_normalized),0)
-        RRA = tf.reshape(RRA,[1,2*hidden_size])
-        
-        decoded_hidden_next,cell_d = decoder(y,decoded_hidden,cell_d,
-                                  wf_d,uf_d,bf_d,
-                                  wi_d,ui_d,bf_d,
-                                  wo_d,uo_d,bf_d,
-                                  wc_d,uc_d,bc_d,
-                                  RRA)
-        
-        decoded_hidden = decoded_hidden_next
-        
-        hidden_residuals_d = tf.cond(tf.equal(j,tf_output_len-1+K+1), #(+1 for <SOS>)
-                                   lambda: hidden_residuals_d,
-                                   lambda: hidden_residuals_d.write(j,tf.reshape(decoded_hidden,[2*hidden_size])))
-        
-        return i+1,j+1,decoded_hidden,cell_d,hidden_residuals_d,output
-    
-    i,j,decoded_hidden,cell_d,hidden_residuals_d,output = tf.while_loop(attention_decoder_cond,
-                                            attention_decoder_body,
-                                            [i,j,decoded_hidden,cell_d,hidden_residuals_d,output])
-    hidden_residuals_d.close().mark_used()
-    
-    output = output.stack()
-    
-    return output
-```
-
-The model function is initiated here. The output is
-computed. Cost function and optimizer are defined.
-I am creating a prediction tensorarray which will 
-store the index of maximum element of 
-the output probability distributions.
-From that index I can find the word in vocab_limit
-which is represented by it. So the final visible
-predictions will be the words that the model decides to
-be most probable.
-
-
-```python
-output = model(tf_text,tf_seq_len,tf_output_len)
-
-#OPTIMIZER
-
-cost = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=output, labels=tf_summary))
-optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
-
-#PREDICTION
-
-pred = tf.TensorArray(size=tf_output_len,dtype=tf.int32)
+S = tf.shape(embd_text)[1] #text sequence length
+N = tf.shape(embd_text)[0] #batch_size
 
 i=0
+hidden=tf.zeros([N, hidden_size], dtype=tf.float32)
+cell=tf.zeros([N, hidden_size], dtype=tf.float32)
+hidden_forward=tf.TensorArray(size=S, dtype=tf.float32)
 
-def cond_pred(i,pred):
-    return i<tf_output_len
-def body_pred(i,pred):
-    pred = pred.write(i,tf.cast(tf.argmax(output[i]),tf.int32))
-    return i+1,pred
+#shape of embd_text: [N,S,embd_dim]
+embd_text_t = tf.transpose(embd_text,[1,0,2]) 
+#current shape of embd_text: [S,N,embd_dim]
 
-i,pred = tf.while_loop(cond_pred,body_pred,[i,pred]) 
+def cond(i, hidden, cell, hidden_forward):
+    return i < S
 
-prediction = pred.stack()
+def body(i, hidden, cell, hidden_forward):
+    x = embd_text_t[i]
+    
+    hidden,cell = LSTM(x,hidden,cell,embd_dim,hidden_size,scope="forward_encoder")
+    hidden_forward = hidden_forward.write(i, hidden)
+
+    return i+1, hidden, cell, hidden_forward
+
+_, _, _, hidden_forward = tf.while_loop(cond, body, [i, hidden, cell, hidden_forward])
 ```
 
-### TRAINING
-
-Finally, this is where training takes place.
-It's all pretty self explanatory, but one thing to note is that
-I am sending "train_summaries[i][0:len(train_summaries[i])-1]"
-to the transform_out() function. That is, I am ignoring the last
-word from summary. The last word marks the end of the summary.
-It's 'eos'. 
-
-As I said before, I will run it for only a few early iterations.
-So, it's not likely to see any great predicted summaries here.
-As can be seen, the summaries seem more influenced by previous 
-output sample than the input context in these early iterations.
-
-Some of the texts contains undesirable words like br tags and so
-on. So better preprocessing and tokenization may be desirable.
-
-With more layer depth, larger hidden size, mini-batch training,
-and other changes, this model may have potential.
-
-The same arcitechture should be usable for training on translation data.
-
+## Backward Encoding
 
 
 ```python
-import string
-from __future__ import print_function
+i=S-1
+hidden=tf.zeros([N, hidden_size], dtype=tf.float32)
+cell=tf.zeros([N, hidden_size], dtype=tf.float32)
+hidden_backward=tf.TensorArray(size=S, dtype=tf.float32)
 
-init = tf.global_variables_initializer()
+def cond(i, hidden, cell, hidden_backward):
+    return i >= 0
+
+def body(i, hidden, cell, hidden_backward):
+    x = embd_text_t[i]
+    hidden,cell = LSTM(x,hidden,cell,embd_dim,hidden_size,scope="backward_encoder")
+    hidden_backward = hidden_backward.write(i, hidden)
+
+    return i-1, hidden, cell, hidden_backward
+
+_, _, _, hidden_backward = tf.while_loop(cond, body, [i, hidden, cell, hidden_backward])
+```
+
+## Merge Forward and Backward Encoder Hidden States
 
 
-with tf.Session() as sess: # Start Tensorflow Session
+```python
+hidden_forward = hidden_forward.stack()
+hidden_backward = hidden_backward.stack()
+hidden_backward_rev = tf.reverse(hidden_backward,axis=[1])
+
+encoder_states = tf.concat([hidden_forward,hidden_backward_rev],axis=-1)
+encoder_states = tf.transpose(encoder_states,[1,0,2])
+
+encoder_states = tf.layers.dropout(encoder_states,rate=0.3,training=tf_train)
+
+final_encoded_state = tf.layers.dropout(tf.concat([hidden_forward[-1],hidden_backward[-1]],axis=-1),rate=0.3,training=tf_train)
+
+```
+
+## Implementation of attention scoring function
+
+Given a sequence of encoder states ($H_s$) and the decoder hidden state ($H_t$) of current timestep $t$, the equation for computing attention score is:
+
+$$Score = (H_s.W_a).H_t^T $$
+
+($W_a$ = trainable parameters)
+
+(https://nlp.stanford.edu/pubs/emnlp15_attn.pdf)
+
+
+```python
+def attention_score(encoder_states,decoder_hidden_state,scope="attention_score"):
     
-    saver = tf.train.Saver() 
-    # Prepares variable for saving the model
-    sess.run(init) #initialize all variables
-    step = 0   
-    loss_list=[]
-    acc_list=[]
-    val_loss_list=[]
-    val_acc_list=[]
-    best_val_acc=0
-    display_step = 1
-    
-    while step < training_iters:
+    with tf.variable_scope(scope,reuse=tf.AUTO_REUSE):
+        Wa = tf.get_variable("Wa", shape=[2*hidden_size,2*hidden_size],
+                                    dtype=tf.float32,
+                                    trainable=True,
+                                    initializer=tf.glorot_uniform_initializer())
         
-        total_loss=0
-        total_acc=0
-        total_val_loss = 0
-        total_val_acc = 0
-           
-        for i in xrange(0,train_len):
-            
-            train_out = transform_out(train_summaries[i][0:len(train_summaries[i])-1])
-            
-            if i%display_step==0:
-                print("\nIteration: "+str(i))
-                print("Training input sequence length: "+str(len(train_texts[i])))
-                print("Training target outputs sequence length: "+str(len(train_out)))
-            
-                print("\nTEXT:")
-                flag = 0
-                for vec in train_texts[i]:
-                    if vec2word(vec) in string.punctuation or flag==0:
-                        print(str(vec2word(vec)),end='')
-                    else:
-                        print((" "+str(vec2word(vec))),end='')
-                    flag=1
+    encoder_states = tf.reshape(encoder_states,[N*S,2*hidden_size])
+    
+    encoder_states = tf.reshape(tf.matmul(encoder_states,Wa),[N,S,2*hidden_size])
+    decoder_hidden_state = tf.reshape(decoder_hidden_state,[N,2*hidden_size,1])
+    
+    return tf.reshape(tf.matmul(encoder_states,decoder_hidden_state),[N,S])
 
-                print("\n")
+```
+
+## Local Attention Function
+
+Based on: https://nlp.stanford.edu/pubs/emnlp15_attn.pdf
 
 
-            # Run optimization operation (backpropagation)
-            _,loss,pred = sess.run([optimizer,cost,prediction],feed_dict={tf_text: train_texts[i], 
-                                                    tf_seq_len: len(train_texts[i]), 
-                                                    tf_summary: train_out,
-                                                    tf_output_len: len(train_out)})
-            
-         
-            if i%display_step==0:
-                print("\nPREDICTED SUMMARY:\n")
-                flag = 0
-                for index in pred:
-                    #if int(index)!=vocab_limit.index('eos'):
-                    if vocab_limit[int(index)] in string.punctuation or flag==0:
-                        print(str(vocab_limit[int(index)]),end='')
-                    else:
-                        print(" "+str(vocab_limit[int(index)]),end='')
-                    flag=1
-                print("\n")
-                
-                print("ACTUAL SUMMARY:\n")
-                flag = 0
-                for vec in train_summaries[i]:
-                    if vec2word(vec)!='eos':
-                        if vec2word(vec) in string.punctuation or flag==0:
-                            print(str(vec2word(vec)),end='')
-                        else:
-                            print((" "+str(vec2word(vec))),end='')
-                    flag=1
+```python
 
-                print("\n")
-                print("loss="+str(loss))
+def align(encoder_states, decoder_hidden_state,scope="attention"):
+    
+    with tf.variable_scope(scope,reuse=tf.AUTO_REUSE):
+        Wp = tf.get_variable("Wp", shape=[2*hidden_size,125],
+                                    dtype=tf.float32,
+                                    trainable=True,
+                                    initializer=tf.glorot_uniform_initializer())
+        
+        Vp = tf.get_variable("Vp", shape=[125,1],
+                            dtype=tf.float32,
+                            trainable=True,
+                            initializer=tf.glorot_uniform_initializer())
+    
+    positions = tf.cast(S-window_len,dtype=tf.float32) # Maximum valid attention window starting position
+    
+    # Predict attention window starting position 
+    ps = positions*tf.nn.sigmoid(tf.matmul(tf.tanh(tf.matmul(decoder_hidden_state,Wp)),Vp))
+    # ps = (soft-)predicted starting position of attention window
+    pt = ps+D # pt = center of attention window where the whole window length is 2*D+1
+    pt = tf.reshape(pt,[N])
+    
+    i = 0
+    gaussian_position_based_scores = tf.TensorArray(size=S,dtype=tf.float32)
+    sigma = tf.constant(D/2,dtype=tf.float32)
+    
+    def cond(i,gaussian_position_based_scores):
+        
+        return i < S
+                      
+    def body(i,gaussian_position_based_scores):
+        
+        score = tf.exp(-((tf.square(tf.cast(i,tf.float32)-pt))/(2*tf.square(sigma)))) 
+        # (equation (10) in https://nlp.stanford.edu/pubs/emnlp15_attn.pdf)
+        gaussian_position_based_scores = gaussian_position_based_scores.write(i,score)
             
-        step=step+1
+        return i+1,gaussian_position_based_scores
+                      
+    i,gaussian_position_based_scores = tf.while_loop(cond,body,[i,gaussian_position_based_scores])
+    
+    gaussian_position_based_scores = gaussian_position_based_scores.stack()
+    gaussian_position_based_scores = tf.transpose(gaussian_position_based_scores,[1,0])
+    gaussian_position_based_scores = tf.reshape(gaussian_position_based_scores,[N,S])
+    
+    scores = attention_score(encoder_states,decoder_hidden_state)*gaussian_position_based_scores
+    scores = tf.nn.softmax(scores,axis=-1)
+    
+    return tf.reshape(scores,[N,S,1])
+```
+
+## LSTM Decoder With Local Attention
+
+
+```python
+with tf.variable_scope("decoder",reuse=tf.AUTO_REUSE):
+    SOS = tf.get_variable("sos", shape=[1,embd_dim],
+                                dtype=tf.float32,
+                                trainable=True,
+                                initializer=tf.glorot_uniform_initializer())
+    
+    # SOS represents starting marker 
+    # It tells the decoder that it is about to decode the first word of the output
+    # I have set SOS as a trainable parameter
+    
+    Wc = tf.get_variable("Wc", shape=[4*hidden_size,embd_dim],
+                            dtype=tf.float32,
+                            trainable=True,
+                            initializer=tf.glorot_uniform_initializer())
+    
+
+
+SOS = tf.tile(SOS,[N,1]) #now SOS shape: [N,embd_dim]
+inp = SOS
+hidden=final_encoded_state
+cell=tf.zeros([N, 2*hidden_size], dtype=tf.float32)
+decoder_outputs=tf.TensorArray(size=max_summary_len, dtype=tf.float32)
+outputs=tf.TensorArray(size=max_summary_len, dtype=tf.int32)
+
+for i in range(max_summary_len):
+    
+    inp = tf.layers.dropout(inp,rate=0.3,training=tf_train)
+    
+    attention_scores = align(encoder_states,hidden)
+    encoder_context_vector = tf.reduce_sum(encoder_states*attention_scores,axis=1)
+    
+    hidden,cell = LSTM(inp,hidden,cell,embd_dim,2*hidden_size,scope="decoder")
+    
+    hidden_ = tf.layers.dropout(hidden,rate=0.3,training=tf_train)
+    
+    concated = tf.concat([hidden_,encoder_context_vector],axis=-1)
+    
+    linear_out = tf.nn.tanh(tf.matmul(concated,Wc))
+    decoder_output = tf.matmul(linear_out,tf.transpose(tf_embd,[1,0])) 
+    # produce unnormalized probability distribution over vocabulary
+    
+    
+    decoder_outputs = decoder_outputs.write(i,decoder_output)
+    
+    # Pick out most probable vocab indices based on the unnormalized probability distribution
+    
+    next_word_vec = tf.cast(tf.argmax(decoder_output,1),tf.int32)
+
+    next_word_vec = tf.reshape(next_word_vec, [N])
+
+    outputs = outputs.write(i,next_word_vec)
+
+    next_word = tf.nn.embedding_lookup(tf_embd, next_word_vec)
+    inp = tf.reshape(next_word, [N, embd_dim])
+    
+    
+decoder_outputs = decoder_outputs.stack()
+outputs = outputs.stack()
+
+decoder_outputs = tf.transpose(decoder_outputs,[1,0,2])
+outputs = tf.transpose(outputs,[1,0])
+
+    
     
 ```
 
-    
-    Iteration: 0
-    Training input sequence length: 51
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    i have bought several of the vitality canned dog food products and have found them all to be of good quality. the product looks more like a stew than a processed meat and it smells better. my labrador is finicky and she appreciates this product better than most.
-    
-    
-    PREDICTED SUMMARY:
-    
-    swipe swipe weiner weiner
-    
-    ACTUAL SUMMARY:
-    
-    good quality dog food
-    
-    loss=10.3719
-    
-    Iteration: 1
-    Training input sequence length: 37
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    product arrived labeled as jumbo salted peanuts ... the peanuts were actually small sized unsalted. not sure if this was an error or if the vendor intended to represent the product as `` jumbo ''.
-    
-    
-    PREDICTED SUMMARY:
-    
-    good food food
-    
-    ACTUAL SUMMARY:
-    
-    not as advertised
-    
-    loss=10.5117
-    
-    Iteration: 2
-    Training input sequence length: 46
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    if you are looking for the secret ingredient in robitussin i believe i have found it. i got this in addition to the root beer extract i ordered( which was good) and made some cherry soda. the flavor is very medicinal.
-    
-    
-    PREDICTED SUMMARY:
-    
-    quality food
-    
-    ACTUAL SUMMARY:
-    
-    cough medicine
-    
-    loss=10.497
-    
-    Iteration: 3
-    Training input sequence length: 32
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    great taffy at a great price. there was a wide assortment of yummy taffy. delivery was very quick. if your a taffy lover, this is a deal.
-    
-    
-    PREDICTED SUMMARY:
-    
-    not advertised
-    
-    ACTUAL SUMMARY:
-    
-    great taffy
-    
-    loss=10.4166
-    
-    Iteration: 4
-    Training input sequence length: 30
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    this taffy is so good. it is very soft and chewy. the flavors are amazing. i would definitely recommend you buying it. very satisfying!!
-    
-    
-    PREDICTED SUMMARY:
-    
-    not advertised advertised advertised
-    
-    ACTUAL SUMMARY:
-    
-    wonderful, tasty taffy
-    
-    loss=10.62
-    
-    Iteration: 5
-    Training input sequence length: 29
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    right now i 'm mostly just sprouting this so my cats can eat the grass. they love it. i rotate it around with wheatgrass and rye too
-    
-    
-    PREDICTED SUMMARY:
-    
-    not advertised
-    
-    ACTUAL SUMMARY:
-    
-    yay barley
-    
-    loss=12.5289
-    
-    Iteration: 6
-    Training input sequence length: 29
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    this is a very healthy dog food. good for their digestion. also good for small puppies. my dog eats her required amount at every feeding.
-    
-    
-    PREDICTED SUMMARY:
-    
-    not advertised advertised
-    
-    ACTUAL SUMMARY:
-    
-    healthy dog food
-    
-    loss=7.77178
-    
-    Iteration: 7
-    Training input sequence length: 24
-    Training target outputs sequence length: 4
-    
-    TEXT:
-    the strawberry twizzlers are my guilty pleasure- yummy. six pounds will be around for a while with my son and i.
-    
-    
-    PREDICTED SUMMARY:
-    
-    cough taffy taffy taffy
-    
-    ACTUAL SUMMARY:
-    
-    strawberry twizzlers- yummy
-    
-    loss=13.8934
-    
-    Iteration: 8
-    Training input sequence length: 45
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    i love eating them and they are good for watching tv and looking at movies! it is not too sweet. i like to transfer them to a zip lock baggie so they stay fresh so i can take my time eating them.
-    
-    
-    PREDICTED SUMMARY:
-    
-    cough taffy
-    
-    ACTUAL SUMMARY:
-    
-    poor taste
-    
-    loss=13.8444
-    
-    Iteration: 9
-    Training input sequence length: 28
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    i am very satisfied with my unk purchase. i shared these with others and we have all enjoyed them. i will definitely be ordering more.
-    
-    
-    PREDICTED SUMMARY:
-    
-    cough taffy food
-    
-    ACTUAL SUMMARY:
-    
-    love it!
-    
-    loss=13.4374
-    
-    Iteration: 10
-    Training input sequence length: 31
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    candy was delivered very fast and was purchased at a reasonable price. i was home bound and unable to get to a store so this was perfect for me.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great taffy food
-    
-    ACTUAL SUMMARY:
-    
-    home delivered unk
-    
-    loss=12.8076
-    
-    Iteration: 11
-    Training input sequence length: 52
-    Training target outputs sequence length: 2
-    
-    TEXT:
-    my husband is a twizzlers addict. we 've bought these many times from amazon because we 're government employees living overseas and ca n't get them in the country we are assigned to. they 've always been fresh and tasty, packed well and arrive in a timely manner.
-    
-    
-    PREDICTED SUMMARY:
-    
-    great great
-    
-    ACTUAL SUMMARY:
-    
-    always fresh
-    
-    loss=10.7377
-    
-    Iteration: 12
-    Training input sequence length: 68
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    i bought these for my husband who is currently overseas. he loves these, and apparently his staff likes them unk< br/> there are generous amounts of twizzlers in each 16-ounce bag, and this was well worth the price.< a unk '' http: unk ''> twizzlers, strawberry, 16-ounce bags( pack of 6)< unk>
-    
-    
-    PREDICTED SUMMARY:
-    
-    yay
-    
-    ACTUAL SUMMARY:
-    
-    twizzlers
-    
-    loss=6.44585
-    
-    Iteration: 13
-    Training input sequence length: 31
-    Training target outputs sequence length: 3
-    
-    TEXT:
-    i can remember buying this candy as a kid and the quality has n't dropped in all these years. still a superb product you wo n't be disappointed with.
-    
-    
-    PREDICTED SUMMARY:
-    
-    yay barley,
-    
-    ACTUAL SUMMARY:
-    
-    delicious product!
-    
-    loss=9.29425
-    
-    Iteration: 14
-    Training input sequence length: 21
-    Training target outputs sequence length: 1
-    
-    TEXT:
-    i love this candy. after weight watchers i had to cut back but still have a craving for it.
-    
-    
-    PREDICTED SUMMARY:
-    
-    twizzlers
-    
-    ACTUAL SUMMARY:
-    
-    twizzlers
-    
-    loss=3.23818
-    
-    Iteration: 15
-    Training input sequence length: 72
-    Training target outputs sequence length: 7
-    
-    TEXT:
-    i have lived out of the us for over 7 yrs now
+## Define Cross Entropy Cost Function and L2 Regularization
 
-### To Try\ To Do\ To keep in mind: (It's more like a note to self)
+
+```python
+filtered_trainables = [var for var in tf.trainable_variables() if
+                       not("Bias" in var.name or "bias" in var.name
+                           or "noreg" in var.name)]
+
+regularization = tf.reduce_sum([tf.nn.l2_loss(var) for var
+                                in filtered_trainables])
+
+with tf.variable_scope("loss"):
+
+    epsilon = tf.constant(1e-9, tf.float32)
+
+    cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=tf_summary, logits=decoder_outputs)
+
+    pad_mask = tf.sequence_mask(tf_true_summary_len,
+                                maxlen=max_summary_len,
+                                dtype=tf.float32)
+
+    masked_cross_entropy = cross_entropy*pad_mask
+
+    cost = tf.reduce_mean(masked_cross_entropy) + \
+        l2*regularization
+
+    cross_entropy = tf.reduce_mean(masked_cross_entropy)
+```
+
+## Accuracy
+
+
+```python
+# Comparing predicted sequence with labels
+comparison = tf.cast(tf.equal(outputs, tf_summary),
+                     tf.float32)
+
+# Masking to ignore the effect of pads while calculating accuracy
+pad_mask = tf.sequence_mask(tf_true_summary_len,
+                            maxlen=max_summary_len,
+                            dtype=tf.bool)
+
+masked_comparison = tf.boolean_mask(comparison, pad_mask)
+
+# Accuracy
+accuracy = tf.reduce_mean(masked_comparison)
+```
+
+## Define Optimizer
+
+
+```python
+all_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+
+optimizer = tf.contrib.opt.NadamOptimizer(
+    learning_rate=learning_rate)
+
+gvs = optimizer.compute_gradients(cost, var_list=all_vars)
+
+capped_gvs = [(tf.clip_by_norm(grad, 5), var) for grad, var in gvs] # Gradient Clipping
+
+train_op = optimizer.apply_gradients(capped_gvs)
+```
+
+## Training and Validation
+
+
+```python
+import pickle
+import random
+
+with tf.Session() as sess:  # Start Tensorflow Session
+    display_step = 100
+    patience = 5
+
+    load = input("\nLoad checkpoint? y/n: ")
+    print("")
+    saver = tf.train.Saver()
+
+    if load.lower() == 'y':
+
+        print('Loading pre-trained weights for the model...')
+
+        train_saver.restore(sess, 'Model_Backup/Seq2seq_summarization.ckpt')
+        sess.run(tf.global_variables())
+        sess.run(tf.tables_initializer())
+
+        with open('Model_Backup/Seq2seq_summarization.pkl', 'rb') as fp:
+            train_data = pickle.load(fp)
+
+        covered_epochs = train_data['covered_epochs']
+        best_loss = train_data['best_loss']
+        impatience = 0
+        
+        print('\nRESTORATION COMPLETE\n')
+
+    else:
+        best_loss = 2**30
+        impatience = 0
+        covered_epochs = 0
+
+        init = tf.global_variables_initializer()
+        sess.run(init)
+        sess.run(tf.tables_initializer())
+
+    epoch=0
+    while (epoch+covered_epochs)<epochs:
+        
+        print("\n\nSTARTING TRAINING\n\n")
+        
+        batches_indices = [i for i in range(0, len(train_batches_text))]
+        random.shuffle(batches_indices)
+
+        total_train_acc = 0
+        total_train_loss = 0
+
+        for i in range(0, len(train_batches_text)):
+            
+            j = int(batches_indices[i])
+
+            cost,prediction,\
+                acc, _ = sess.run([cross_entropy,
+                                   outputs,
+                                   accuracy,
+                                   train_op],
+                                  feed_dict={tf_text: train_batches_text[j],
+                                             tf_embd: embd,
+                                             tf_summary: train_batches_summary[j],
+                                             tf_true_summary_len: train_batches_true_summary_len[j],
+                                             tf_train: True})
+            
+            total_train_acc += acc
+            total_train_loss += cost
+
+            if i % display_step == 0:
+                print("Iter "+str(i)+", Cost= " +
+                      "{:.3f}".format(cost)+", Acc = " +
+                      "{:.2f}%".format(acc*100))
+            
+            if i % 500 == 0:
+                
+                idx = random.randint(0,len(train_batches_text[j])-1)
+                
+                
+                
+                text = " ".join([idx2vocab.get(vec,"<UNK>") for vec in train_batches_text[j][idx]])
+                predicted_summary = [idx2vocab.get(vec,"<UNK>") for vec in prediction[idx]]
+                actual_summary = [idx2vocab.get(vec,"<UNK>") for vec in train_batches_summary[j][idx]]
+                
+                print("\nSample Text\n")
+                print(text)
+                print("\nSample Predicted Summary\n")
+                for word in predicted_summary:
+                    if word == '<EOS>':
+                        break
+                    else:
+                        print(word,end=" ")
+                print("\n\nSample Actual Summary\n")
+                for word in actual_summary:
+                    if word == '<EOS>':
+                        break
+                    else:
+                        print(word,end=" ")
+                print("\n\n")
+                
+        print("\n\nSTARTING VALIDATION\n\n")
+                
+        total_val_loss=0
+        total_val_acc=0
+                
+        for i in range(0, len(val_batches_text)):
+            
+            if i%100==0:
+                print("Validating data # {}".format(i))
+
+            cost, prediction,\
+                acc = sess.run([cross_entropy,
+                                outputs,
+                                accuracy],
+                                  feed_dict={tf_text: val_batches_text[i],
+                                             tf_embd: embd,
+                                             tf_summary: val_batches_summary[i],
+                                             tf_true_summary_len: val_batches_true_summary_len[i],
+                                             tf_train: False})
+            
+            total_val_loss += cost
+            total_val_acc += acc
+            
+        avg_val_loss = total_val_loss/len(val_batches_text)
+        
+        print("\n\nEpoch: {}\n\n".format(epoch+covered_epochs))
+        print("Average Training Loss: {:.3f}".format(total_train_loss/len(train_batches_text)))
+        print("Average Training Accuracy: {:.2f}".format(100*total_train_acc/len(train_batches_text)))
+        print("Average Validation Loss: {:.3f}".format(avg_val_loss))
+        print("Average Validation Accuracy: {:.2f}".format(100*total_val_acc/len(val_batches_text)))
+              
+        if (avg_val_loss < best_loss):
+            best_loss = avg_val_loss
+            save_data={'best_loss':best_loss,'covered_epochs':covered_epochs+epoch+1}
+            impatience=0
+            with open('Model_Backup/Seq2seq_summarization.pkl', 'wb') as fp:
+                pickle.dump(save_data, fp)
+            saver.save(sess, 'Model_Backup/Seq2seq_summarization.ckpt')
+            print("\nModel saved\n")
+              
+        else:
+            impatience+=1
+              
+        if impatience > patience:
+              break
+              
+              
+        epoch+=1
+            
+```
+
+    
+    Load checkpoint? y/n: n
+    
+    
+    
+    STARTING TRAINING
+    
+    
+    Iter 0, Cost= 2.086, Acc = 0.00%
+    
+    Sample Text
+    
+    i 'm not a big pretzel eater , but i love this little <UNK> nibblers . i like the low fat snack and how it fills you up .
+    
+    Sample Predicted Summary
+    
+    municipality jackass municipality mongolian seats han han mongolian hah sus sus wat hah casbah dynasty province 
+    
+    Sample Actual Summary
+    
+    great pretzels 
+    
+    
+    Iter 100, Cost= 0.985, Acc = 35.58%
+    Iter 200, Cost= 0.914, Acc = 33.33%
+    Iter 300, Cost= 0.928, Acc = 36.11%
+    Iter 400, Cost= 0.943, Acc = 35.19%
+    Iter 500, Cost= 0.676, Acc = 42.71%
+    
+    Sample Text
+    
+    we <UNK> this one , but the flavor could have been a tad stronger . very yummy tho , we will totally purchase again !
+    
+    Sample Predicted Summary
+    
+    delicious ! 
+    
+    Sample Actual Summary
+    
+    very good ! 
+    
+    
+    Iter 600, Cost= 0.878, Acc = 35.24%
+    Iter 700, Cost= 0.949, Acc = 33.04%
+    Iter 800, Cost= 1.074, Acc = 34.65%
+    Iter 900, Cost= 0.831, Acc = 44.21%
+    Iter 1000, Cost= 0.911, Acc = 36.36%
+    
+    Sample Text
+    
+    tried this hoping for something better than the thick salsa that everyone else makes and it was great ! after making our own it gets time consuming so this is a good alternative .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    great salsa 
+    
+    
+    Iter 1100, Cost= 1.081, Acc = 23.33%
+    Iter 1200, Cost= 1.018, Acc = 32.73%
+    Iter 1300, Cost= 0.902, Acc = 35.87%
+    Iter 1400, Cost= 0.946, Acc = 31.07%
+    Iter 1500, Cost= 0.798, Acc = 42.31%
+    
+    Sample Text
+    
+    i had a coupon for this so it was a good value . otherwise it is to expense for what you get . my box had a couple of opened cereals in it so i did n't get the full value of all ...
+    
+    Sample Predicted Summary
+    
+    good 
+    
+    Sample Actual Summary
+    
+    good value 
+    
+    
+    Iter 1600, Cost= 0.871, Acc = 33.33%
+    Iter 1700, Cost= 0.943, Acc = 40.00%
+    Iter 1800, Cost= 0.876, Acc = 40.20%
+    Iter 1900, Cost= 0.973, Acc = 37.25%
+    Iter 2000, Cost= 0.978, Acc = 29.73%
+    
+    Sample Text
+    
+    my 4 dogs all had allergies and are just fine now that i switched to <UNK> the <UNK> one smell abit but <UNK> they still love it <UNK> the dried <UNK> canned r terrific <UNK> nooo grani !
+    
+    Sample Predicted Summary
+    
+    <UNK> ! 
+    
+    Sample Actual Summary
+    
+    great food 
+    
+    
+    Iter 2100, Cost= 0.907, Acc = 37.04%
+    Iter 2200, Cost= 0.928, Acc = 34.31%
+    Iter 2300, Cost= 0.906, Acc = 31.25%
+    Iter 2400, Cost= 0.903, Acc = 37.00%
+    Iter 2500, Cost= 0.811, Acc = 33.01%
+    
+    Sample Text
+    
+    the chocolate was a little crumbly , but the taste is very good . my hubby has <UNK> , and it is gluten free , so it is an excellent bar to stock in the pantry for whenever he does n't have time for breakfast .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    yum 
+    
+    
+    Iter 2600, Cost= 0.839, Acc = 34.62%
+    Iter 2700, Cost= 0.927, Acc = 37.07%
+    Iter 2800, Cost= 0.853, Acc = 36.73%
+    Iter 2900, Cost= 0.805, Acc = 40.00%
+    Iter 3000, Cost= 0.855, Acc = 35.51%
+    
+    Sample Text
+    
+    tea came packaged as expected , delivered quickly and with stash you can not go wrong . individually wrapped and stays fresh and very flavorful . highly recommended for the earl gray tea lover .
+    
+    Sample Predicted Summary
+    
+    delicious tea 
+    
+    Sample Actual Summary
+    
+    great tea 
+    
+    
+    Iter 3100, Cost= 0.854, Acc = 36.63%
+    
+    
+    STARTING VALIDATION
+    
+    
+    Validating data # 0
+    Validating data # 100
+    Validating data # 200
+    Validating data # 300
+    
+    
+    Epoch: 0
+    
+    
+    Average Training Loss: 0.907
+    Average Training Accuracy: 35.42
+    Average Validation Loss: 0.865
+    Average Validation Accuracy: 36.65
+    
+    Model saved
+    
+    
+    
+    STARTING TRAINING
+    
+    
+    Iter 0, Cost= 0.808, Acc = 34.34%
+    
+    Sample Text
+    
+    quaker oatmeal squares has been our family favorite for a couple of years now . ca n't get enough of it . just the right sweetness and crunch .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    favorite cereal 
+    
+    
+    Iter 100, Cost= 1.036, Acc = 34.26%
+    Iter 200, Cost= 0.934, Acc = 33.03%
+    Iter 300, Cost= 0.972, Acc = 35.85%
+    Iter 400, Cost= 0.926, Acc = 32.35%
+    Iter 500, Cost= 0.738, Acc = 41.05%
+    
+    Sample Text
+    
+    great taste , nice smell , great <UNK> < br / > if you mix it with fresh ment you will get fantastic <UNK> < br / > i will buy it again .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    the best 
+    
+    
+    Iter 600, Cost= 0.858, Acc = 41.24%
+    Iter 700, Cost= 0.905, Acc = 36.45%
+    Iter 800, Cost= 0.795, Acc = 35.05%
+    Iter 900, Cost= 0.806, Acc = 37.50%
+    Iter 1000, Cost= 0.795, Acc = 35.64%
+    
+    Sample Text
+    
+    i bought about 5 different kinds of <UNK> when i first got my coffee maker , which i love by the way , and i 'd have to say that this was my favorite one out of them all . it has the perfect balance of everything , i was really surprised .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    excellent stuff 
+    
+    
+    Iter 1100, Cost= 0.825, Acc = 39.42%
+    Iter 1200, Cost= 0.743, Acc = 38.78%
+    Iter 1300, Cost= 0.813, Acc = 41.84%
+    Iter 1400, Cost= 0.933, Acc = 29.66%
+    Iter 1500, Cost= 0.978, Acc = 33.61%
+    
+    Sample Text
+    
+    i really wanted to like this , as it was organic , and came in a glass bottle , but there was hardly any flavor at all . i could barely smell it , and even when i poured a generous amount on my dish , it imparts little to no truffle <UNK> . my truffle salt is much more potent .
+    
+    Sample Predicted Summary
+    
+    good 
+    
+    Sample Actual Summary
+    
+    weak 
+    
+    
+    Iter 1600, Cost= 0.778, Acc = 45.10%
+    Iter 1700, Cost= 0.855, Acc = 38.83%
+    Iter 1800, Cost= 0.815, Acc = 41.58%
+    Iter 1900, Cost= 0.853, Acc = 37.62%
+    Iter 2000, Cost= 1.003, Acc = 32.74%
+    
+    Sample Text
+    
+    i love milk chocolate and do n't like dark <UNK> . my husband is the opposite , so i always buy him the dark stuff and it 's safe for him , haha ! until i happened to try this one . it 's awesome !
+    
+    Sample Predicted Summary
+    
+    <UNK> ! 
+    
+    Sample Actual Summary
+    
+    it 's good ! ! 
+    
+    
+    Iter 2100, Cost= 0.817, Acc = 37.74%
+    Iter 2200, Cost= 0.977, Acc = 33.33%
+    Iter 2300, Cost= 0.840, Acc = 35.96%
+    Iter 2400, Cost= 0.749, Acc = 31.58%
+    Iter 2500, Cost= 0.885, Acc = 31.73%
+    
+    Sample Text
+    
+    the best thing about this coffee is the sweet smell , just like a blueberry muffin . the taste is good , not as sweet as i was expecting but it was good nonetheless . its a nice treat when you 're craving something sweet but it wo n't replace my morning donut shop coffee : )
+    
+    Sample Predicted Summary
+    
+    delicious 
+    
+    Sample Actual Summary
+    
+    smells yummy : ) 
+    
+    
+    Iter 2600, Cost= 0.887, Acc = 32.73%
+    Iter 2700, Cost= 0.780, Acc = 44.94%
+    Iter 2800, Cost= 0.899, Acc = 35.71%
+    Iter 2900, Cost= 0.797, Acc = 38.24%
+    Iter 3000, Cost= 1.061, Acc = 33.33%
+    
+    Sample Text
+    
+    this tea is wonderful , one bag will make three cups for most people . i like my tea very strong so these were perfect . i bet they will be good for making a good ice tea .
+    
+    Sample Predicted Summary
+    
+    great tea 
+    
+    Sample Actual Summary
+    
+    one bag 3 cups 
+    
+    
+    Iter 3100, Cost= 0.769, Acc = 37.86%
+    
+    
+    STARTING VALIDATION
+    
+    
+    Validating data # 0
+    Validating data # 100
+    Validating data # 200
+    Validating data # 300
+    
+    
+    Epoch: 1
+    
+    
+    Average Training Loss: 0.863
+    Average Training Accuracy: 36.40
+    Average Validation Loss: 0.837
+    Average Validation Accuracy: 37.30
+    
+    Model saved
+    
+    
+    
+    STARTING TRAINING
+    
+    
+    Iter 0, Cost= 0.959, Acc = 35.85%
+    
+    Sample Text
+    
+    really good bars . you could cut this baby in 1/2 and have 2 snacks out of it ! i bought 1 at the store first to see if i liked them and paid lots more for it . i do n't eat alot of meat so this caught my eye . i now have them on auto delivery ! !
+    
+    Sample Predicted Summary
+    
+    great ! 
+    
+    Sample Actual Summary
+    
+    great bars ! 
+    
+    
+    Iter 100, Cost= 0.792, Acc = 33.33%
+    Iter 200, Cost= 0.781, Acc = 35.29%
+    Iter 300, Cost= 0.825, Acc = 40.74%
+    Iter 400, Cost= 0.793, Acc = 40.19%
+    Iter 500, Cost= 0.860, Acc = 31.07%
+    
+    Sample Text
+    
+    i always buy my coffee from amazon as the prices are cheaper and i love all the coffee . best price on line .
+    
+    Sample Predicted Summary
+    
+    great coffee 
+    
+    Sample Actual Summary
+    
+    peggy 
+    
+    
+    Iter 600, Cost= 0.990, Acc = 28.57%
+    Iter 700, Cost= 0.736, Acc = 41.41%
+    Iter 800, Cost= 0.826, Acc = 33.68%
+    Iter 900, Cost= 0.904, Acc = 35.24%
+    Iter 1000, Cost= 0.858, Acc = 35.71%
+    
+    Sample Text
+    
+    i am very pleased with this product and the company sent it on a timely basis , well packed to prevent breakage .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    good stuff 
+    
+    
+    Iter 1100, Cost= 0.999, Acc = 30.36%
+    Iter 1200, Cost= 0.726, Acc = 44.79%
+    Iter 1300, Cost= 0.798, Acc = 36.73%
+    Iter 1400, Cost= 0.712, Acc = 48.98%
+    Iter 1500, Cost= 0.884, Acc = 38.18%
+    
+    Sample Text
+    
+    i love this cereal , easy to eat out of the box . sweet but not too sweet and very crunchy . since frosted mini wheats have gelatin in them they are not an option for vegans or vegetarians , these are the best replacement .
+    
+    Sample Predicted Summary
+    
+    <UNK> 
+    
+    Sample Actual Summary
+    
+    love it . 
+    
+    
+    Iter 1600, Cost= 0.819, Acc = 44.12%
+    Iter 1700, Cost= 0.958, Acc = 32.11%
+    Iter 1800, Cost= 0.800, Acc = 37.96%
+    Iter 1900, Cost= 0.649, Acc = 40.82%
+    Iter 2000, Cost= 0.900, Acc = 36.21%
+    
+    Sample Text
+    
+    i have been buying these bars ( without chocolate ) for years and have recently found them with the chocolate . our family of six loves them . they are a great bar to hold you over and give you extended fuel , made with great ingredients to boot . i highly recommend you try a box !
+    
+    Sample Predicted Summary
+    
+    great ! 
+    
+    Sample Actual Summary
+    
+    <UNK> ! 
+    
+    
+    Iter 2100, Cost= 0.767, Acc = 36.19%
+    Iter 2200, Cost= 0.676, Acc = 37.62%
+    Iter 2300, Cost= 0.871, Acc = 40.00%
+    Iter 2400, Cost= 0.687, Acc = 39.60%
+    Iter 2500, Cost= 0.898, Acc = 36.27%
+    
+    Sample Text
+    
+    this is top notch almond syrup . we put it in lemonade and strawberries . great for many <UNK> < br / > also use in baking recipes .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    soooo yummy 
+    
+    
+    Iter 2600, Cost= 0.796, Acc = 40.74%
+    Iter 2700, Cost= 0.775, Acc = 46.00%
+    Iter 2800, Cost= 0.856, Acc = 40.19%
+    Iter 2900, Cost= 0.954, Acc = 35.85%
+    Iter 3000, Cost= 0.831, Acc = 35.40%
+    
+    Sample Text
+    
+    this is very good coffee at a good price ... it is an old product that has been on the market since i was quite young .
+    
+    Sample Predicted Summary
+    
+    coffee 
+    
+    Sample Actual Summary
+    
+    good stuff ! 
+    
+    
+    Iter 3100, Cost= 0.754, Acc = 36.27%
+    
+    
+    STARTING VALIDATION
+    
+    
+    Validating data # 0
+    Validating data # 100
+    Validating data # 200
+    Validating data # 300
+    
+    
+    Epoch: 2
+    
+    
+    Average Training Loss: 0.840
+    Average Training Accuracy: 37.26
+    Average Validation Loss: 0.818
+    Average Validation Accuracy: 38.42
+    
+    Model saved
+    
+    
+    
+    STARTING TRAINING
+    
+    
+    Iter 0, Cost= 0.822, Acc = 36.36%
+    
+    Sample Text
+    
+    the chocolate covered figs were delicious and presented beautifully in the package . great for a gift for someone who has everything .
+    
+    Sample Predicted Summary
+    
+    delicious 
+    
+    Sample Actual Summary
+    
+    figs 
+    
+    
+    Iter 100, Cost= 0.734, Acc = 37.86%
+    Iter 200, Cost= 0.837, Acc = 41.18%
+    Iter 300, Cost= 0.717, Acc = 34.91%
+    Iter 400, Cost= 0.797, Acc = 38.61%
+    Iter 500, Cost= 0.718, Acc = 32.38%
+    
+    Sample Text
+    
+    one of my favorite flavors of <UNK> , it used to be called twisted tornado , now called fruit twist either way i ca n't stop myself from eating its so flavorful = )
+    
+    Sample Predicted Summary
+    
+    great ! 
+    
+    Sample Actual Summary
+    
+    yum 
+    
+    
+    Iter 600, Cost= 0.846, Acc = 40.59%
+    Iter 700, Cost= 0.676, Acc = 43.75%
+    Iter 800, Cost= 0.882, Acc = 39.22%
+    Iter 900, Cost= 0.803, Acc = 36.54%
+    Iter 1000, Cost= 0.718, Acc = 40.40%
+    
+    Sample Text
+    
+    i found this product to be a nice tasting pepper blend and would recommend it to all of those who enjoy the fresh flavor of ground pepper .
+    
+    Sample Predicted Summary
+    
+    good taste 
+    
+    Sample Actual Summary
+    
+    peppercorn mix 
+    
+    
+    Iter 1100, Cost= 0.749, Acc = 41.24%
+    Iter 1200, Cost= 0.821, Acc = 38.10%
+    Iter 1300, Cost= 0.883, Acc = 39.81%
+    Iter 1400, Cost= 0.961, Acc = 29.91%
+    Iter 1500, Cost= 1.130, Acc = 33.96%
+    
+    Sample Text
+    
+    bought the popper about two years ago and have been enjoying the delicious fresh buttery salty ( as i want ) best popcorn ever . love it and it 's a staple snack in our house . would never <UNK> corn again .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    top notch 
+    
+    
+    Iter 1600, Cost= 0.855, Acc = 35.24%
+    Iter 1700, Cost= 0.701, Acc = 38.61%
+    Iter 1800, Cost= 0.865, Acc = 35.64%
+    Iter 1900, Cost= 0.868, Acc = 39.62%
+    Iter 2000, Cost= 0.849, Acc = 40.78%
+    
+    Sample Text
+    
+    i love sour stuff . this is n't too sour but still gets the job done . good chewy candy . arrived faster than expected too .
+    
+    Sample Predicted Summary
+    
+    good 
+    
+    Sample Actual Summary
+    
+    mmmmm 
+    
+    
+    Iter 2100, Cost= 0.951, Acc = 32.73%
+    Iter 2200, Cost= 0.875, Acc = 31.68%
+    Iter 2300, Cost= 0.866, Acc = 42.20%
+    Iter 2400, Cost= 0.725, Acc = 46.32%
+    Iter 2500, Cost= 0.793, Acc = 35.71%
+    
+    Sample Text
+    
+    i had not tried this tea before but i was hoping it was similar to one i tried while in england . i was not disappointed . the pack of 6 makes it a very good value as well .
+    
+    Sample Predicted Summary
+    
+    tea tea 
+    
+    Sample Actual Summary
+    
+    love this tea ! 
+    
+    
+    Iter 2600, Cost= 0.864, Acc = 34.82%
+    Iter 2700, Cost= 0.853, Acc = 38.10%
+    Iter 2800, Cost= 0.694, Acc = 40.40%
+    Iter 2900, Cost= 1.020, Acc = 34.26%
+    Iter 3000, Cost= 0.782, Acc = 43.00%
+    
+    Sample Text
+    
+    extremely disappointing . frankly , i think plain old lipton tea is smoother and less bitter . when brewed , i could hardly recognize it as green tea . it tasted more like a very poor earl gray .
+    
+    Sample Predicted Summary
+    
+    sad 
+    
+    Sample Actual Summary
+    
+    not good at all 
+    
+    
+    Iter 3100, Cost= 0.756, Acc = 35.64%
+    
+    
+    STARTING VALIDATION
+    
+    
+    Validating data # 0
+    Validating data # 100
+    Validating data # 200
+    Validating data # 300
+    
+    
+    Epoch: 3
+    
+    
+    Average Training Loss: 0.820
+    Average Training Accuracy: 38.18
+    Average Validation Loss: 0.801
+    Average Validation Accuracy: 39.24
+    
+    Model saved
+    
+    
+    
+    STARTING TRAINING
+    
+    
+    Iter 0, Cost= 0.821, Acc = 39.00%
+    
+    Sample Text
+    
+    love this tea . i do not like the plain sleepytime but adding the vanilla is a great move ! highly recommend it . looking forward to trying the honey sleepy time !
+    
+    Sample Predicted Summary
+    
+    love ! 
+    
+    Sample Actual Summary
+    
+    love it 
+    
+    
+    Iter 100, Cost= 0.725, Acc = 37.00%
+    Iter 200, Cost= 0.805, Acc = 39.29%
+    Iter 300, Cost= 0.838, Acc = 41.23%
+    Iter 400, Cost= 0.713, Acc = 49.07%
+    Iter 500, Cost= 0.722, Acc = 37.86%
+    
+    Sample Text
+    
+    the product arrived quickly . all bags and chips were in place ... and safe ; <UNK> these chips are delicious and only four ww points !
+    
+    Sample Predicted Summary
+    
+    delicious 
+    
+    Sample Actual Summary
+    
+    yum ! 
+    
+    
+    Iter 600, Cost= 0.941, Acc = 34.82%
+    Iter 700, Cost= 0.678, Acc = 42.00%
+    Iter 800, Cost= 0.607, Acc = 47.47%
+    Iter 900, Cost= 0.679, Acc = 41.94%
+    Iter 1000, Cost= 0.763, Acc = 48.60%
+    
+    Sample Text
+    
+    this is a light to medium roast , wish it was slightly stronger , but the flavor is good and i am having it every morning using 2 6 oz . <UNK> pumps to make it as strong as possible .
+    
+    Sample Predicted Summary
+    
+    very good 
+    
+    Sample Actual Summary
+    
+    i like it ! 
+    
+    
+    Iter 1100, Cost= 0.671, Acc = 44.44%
+    Iter 1200, Cost= 0.810, Acc = 39.81%
+    Iter 1300, Cost= 0.899, Acc = 31.78%
+    Iter 1400, Cost= 0.865, Acc = 39.42%
+    Iter 1500, Cost= 0.809, Acc = 36.54%
+    
+    Sample Text
+    
+    i expected a little more flavor as i usually like green mountain <UNK> < br / > next time i 'll look for a french roast !
+    
+    Sample Predicted Summary
+    
+    good 
+    
+    Sample Actual Summary
+    
+    too weak 
+    
+    
+    Iter 1600, Cost= 0.873, Acc = 39.45%
+    Iter 1700, Cost= 0.882, Acc = 38.14%
+    Iter 1800, Cost= 0.953, Acc = 34.86%
+    Iter 1900, Cost= 0.961, Acc = 33.66%
+    Iter 2000, Cost= 0.774, Acc = 35.92%
+    
+    Sample Text
+    
+    i use this sauce on pork ribs , after baking them at 300 degrees for 3 hours . the sweet taste of honey along with the tomato is heavenly .
+    
+    Sample Predicted Summary
+    
+    great sauce 
+    
+    Sample Actual Summary
+    
+    the best 
+    
+    
+    Iter 2100, Cost= 0.744, Acc = 39.13%
+    Iter 2200, Cost= 0.697, Acc = 41.58%
+    Iter 2300, Cost= 0.869, Acc = 34.26%
+    Iter 2400, Cost= 0.867, Acc = 31.48%
+    Iter 2500, Cost= 0.784, Acc = 38.14%
+    
+    Sample Text
+    
+    excellent < a <UNK> '' http : <UNK> '' > kellogg 's cereal in a cup , favorite assortment pack , 1.5 - <UNK> <UNK> cups ( pack of 60 ) < <UNK> >
+    
+    Sample Predicted Summary
+    
+    good 
+    
+    Sample Actual Summary
+    
+    kelloggs 
+    
+    
+    Iter 2600, Cost= 0.653, Acc = 45.45%
+    Iter 2700, Cost= 0.713, Acc = 46.73%
+    Iter 2800, Cost= 0.777, Acc = 39.05%
+    Iter 2900, Cost= 0.795, Acc = 38.10%
+    Iter 3000, Cost= 0.802, Acc = 41.12%
+    
+    Sample Text
+    
+    this is a good product . the honey tastes great , and it 's very convenient and <UNK> . my local <UNK> store was trying to sell this to me for twice the price as amazon , so i 'm pretty sure this is a good buy .
+    
+    Sample Predicted Summary
+    
+    great 
+    
+    Sample Actual Summary
+    
+    honey ! 
+    
+    
+    Iter 3100, Cost= 0.773, Acc = 45.54%
+    
+    
+    STARTING VALIDATION
+    
+    
+    Validating data # 0
+    Validating data # 100
+    Validating data # 200
+    Validating data # 300
+    
+    
+    Epoch: 4
+    
+    
+    Average Training Loss: 0.804
+    Average Training Accuracy: 39.03
+    Average Validation Loss: 0.786
+    Average Validation Accuracy: 40.62
+    
+    Model saved
+    
+
+
+### Future Works
 
 * Beam Search
 * Pointer Mechanisms
-* Heirarchical attention
-* Try some of these tricks: http://ruder.io/deep-learning-nlp-best-practices/index.html#hyperparameteroptimization
-* [Intra-input-attention](https://arxiv.org/pdf/1705.04304.pdf)
-* Better pre-processing
-* Switch to PyTorch or DyNet or something more suitable for dynamic models. 
-* Mini-Batch Training
-* Better Datasets.
-* Train for different tasks (eg. Translation) using different datasets.
-* Intra-layer attention for both encoder and decoder together with everything else.
-* Adopt a more object oriented approach
-* Regularization
-* Validation
-* Testing
-* Implement Evaluation Metrics (ROUGE\BLEU\Something else)
-
-
+* BLEU\ROUGE evaluation
+* Implement Testing
+* Complete Training and Optimize Hyperparameters
