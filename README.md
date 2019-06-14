@@ -199,9 +199,9 @@ final_encoded_state = tf.layers.dropout(tf.concat([hidden_forward[-1],hidden_bac
 
 ## Implementation of attention scoring function
 
-Given a sequence of encoder states ($H_s$) and the decoder hidden state ($H_t$) of current timestep $t$, the equation for computing attention score is:
+Given a sequence of encoder states (H_s) and the decoder hidden state (H_t) of current timestep t, the equation for computing attention score is:
 
-$$Score = (H_s.W_a).H_t^T $$
+Score = (H_s.W_a).Transpose(H_t)
 
 ($W_a$ = trainable parameters)
 
