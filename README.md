@@ -3,7 +3,7 @@
 
 ### Loading Pre-processed Dataset
 
-The Data is preprocessed in [Data_Pre-Processing.ipynb](https://github.com/JRC1995/Abstractive-Summarization/blob/master/Data%20Pre-processing.ipynb)
+The Data is preprocessed in [Data_Pre-Processing.ipynb](https://github.com/JRC1995/Abstractive-Summarization/blob/master/Data_Pre-Processing.ipynb)
 
 Dataset source: https://www.kaggle.com/snap/amazon-fine-food-reviews
 
