@@ -439,7 +439,7 @@ with tf.Session() as sess:  # Start Tensorflow Session
 
         print('Loading pre-trained weights for the model...')
 
-        train_saver.restore(sess, 'Model_Backup/Seq2seq_summarization.ckpt')
+        saver.restore(sess, 'Model_Backup/Seq2seq_summarization.ckpt')
         sess.run(tf.global_variables())
         sess.run(tf.tables_initializer())
 
