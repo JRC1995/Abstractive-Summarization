@@ -189,9 +189,8 @@ _, _, _, hidden_backward = tf.while_loop(cond, body, [i, hidden, cell, hidden_ba
 ```python
 hidden_forward = hidden_forward.stack()
 hidden_backward = hidden_backward.stack()
-hidden_backward_rev = tf.reverse(hidden_backward,axis=[1])
 
-encoder_states = tf.concat([hidden_forward,hidden_backward_rev],axis=-1)
+encoder_states = tf.concat([hidden_forward,hidden_backward],axis=-1)
 encoder_states = tf.transpose(encoder_states,[1,0,2])
 
 encoder_states = tf.layers.dropout(encoder_states,rate=0.3,training=tf_train)
