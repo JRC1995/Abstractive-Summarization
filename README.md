@@ -1,4 +1,3 @@
-
 # Abstractive Summarization
 
 Based on [Seq2seq learning](https://arxiv.org/abs/1409.3215)
@@ -46,7 +45,7 @@ idx2vocab = {v:k for k,v in vocab2idx.items()}
 hidden_size = 300
 learning_rate = 0.001
 epochs = 5
-max_summary_len = 16 # should be summary_max_len as used in data_preprocessing with +1 (+1 for <EOS>) 
+max_summary_len = 31 # should be summary_max_len as used in data_preprocessing with +1 (+1 for <EOS>) 
 D = 5 # D determines local attention window size
 window_len = 2*D+1
 l2=1e-6
@@ -56,7 +55,10 @@ l2=1e-6
 
 
 ```python
-import tensorflow as tf 
+import tensorflow.compat.v1 as tf 
+
+tf.disable_v2_behavior()
+tf.disable_eager_execution()
 
 embd_dim = len(embd[0])
 
@@ -67,6 +69,23 @@ tf_summary = tf.placeholder(tf.int32,[None, None])
 tf_train = tf.placeholder(tf.bool)
 ```
 
+    WARNING:tensorflow:From /home/jishnu/miniconda3/envs/ML/lib/python3.6/site-packages/tensorflow_core/python/compat/v2_compat.py:65: disable_resource_variables (from tensorflow.python.ops.variable_scope) is deprecated and will be removed in a future version.
+    Instructions for updating:
+    non-resource variables are not supported in the long term
+
+
+## Dropout Function
+
+
+```python
+def dropout(x,rate,training):
+    return tf.cond(tf_train,
+                    lambda: tf.nn.dropout(x,rate=0.3),
+                    lambda: x)
+
+    
+```
+
 ## Embed vectorized text
 
 Dropout used for regularization 
@@ -75,7 +94,8 @@ Dropout used for regularization
 
 ```python
 embd_text = tf.nn.embedding_lookup(tf_embd, tf_text)
-embd_text = tf.layers.dropout(embd_text,rate=0.3,training=tf_train)
+
+embd_text = dropout(embd_text,rate=0.3,training=tf_train)
 ```
 
 ## LSTM function
@@ -193,19 +213,20 @@ hidden_backward = hidden_backward.stack()
 encoder_states = tf.concat([hidden_forward,hidden_backward],axis=-1)
 encoder_states = tf.transpose(encoder_states,[1,0,2])
 
-encoder_states = tf.layers.dropout(encoder_states,rate=0.3,training=tf_train)
+encoder_states = dropout(encoder_states,rate=0.3,training=tf_train)
 
-final_encoded_state = tf.layers.dropout(tf.concat([hidden_forward[-1],hidden_backward[-1]],axis=-1),rate=0.3,training=tf_train)
+final_encoded_state = dropout(tf.concat([hidden_forward[-1],hidden_backward[-1]],axis=-1),rate=0.3,training=tf_train)
+
 
 ```
 
 ## Implementation of attention scoring function
 
-Given a sequence of encoder states (H_s) and the decoder hidden state (H_t) of current timestep t, the equation for computing attention score is:
+Given a sequence of encoder states ($H_s$) and the decoder hidden state ($H_t$) of current timestep $t$, the equation for computing attention score is:
 
-Score = (H_s.W_a).Transpose(H_t)
+$$Score = (H_s.W_a).H_t^T $$
 
-(W_a = trainable parameters)
+($W_a$ = trainable parameters)
 
 (https://nlp.stanford.edu/pubs/emnlp15_attn.pdf)
 
@@ -238,12 +259,12 @@ Based on: https://nlp.stanford.edu/pubs/emnlp15_attn.pdf
 def align(encoder_states, decoder_hidden_state,scope="attention"):
     
     with tf.variable_scope(scope,reuse=tf.AUTO_REUSE):
-        Wp = tf.get_variable("Wp", shape=[2*hidden_size,125],
+        Wp = tf.get_variable("Wp", shape=[2*hidden_size,128],
                                     dtype=tf.float32,
                                     trainable=True,
                                     initializer=tf.glorot_uniform_initializer())
         
-        Vp = tf.get_variable("Vp", shape=[125,1],
+        Vp = tf.get_variable("Vp", shape=[128,1],
                             dtype=tf.float32,
                             trainable=True,
                             initializer=tf.glorot_uniform_initializer())
@@ -312,18 +333,23 @@ cell=tf.zeros([N, 2*hidden_size], dtype=tf.float32)
 decoder_outputs=tf.TensorArray(size=max_summary_len, dtype=tf.float32)
 outputs=tf.TensorArray(size=max_summary_len, dtype=tf.int32)
 
+attention_scores = align(encoder_states,hidden)
+encoder_context_vector = tf.reduce_sum(encoder_states*attention_scores,axis=1)
+
 for i in range(max_summary_len):
     
-    inp = tf.layers.dropout(inp,rate=0.3,training=tf_train)
+    inp = dropout(inp,rate=0.3,training=tf_train)
+    
+    inp = tf.concat([inp,encoder_context_vector],axis=-1)
+    
+    hidden,cell = LSTM(inp,hidden,cell,embd_dim+2*hidden_size,2*hidden_size,scope="decoder")
+    
+    hidden = dropout(hidden,rate=0.3,training=tf_train)
     
     attention_scores = align(encoder_states,hidden)
     encoder_context_vector = tf.reduce_sum(encoder_states*attention_scores,axis=1)
     
-    hidden,cell = LSTM(inp,hidden,cell,embd_dim,2*hidden_size,scope="decoder")
-    
-    hidden_ = tf.layers.dropout(hidden,rate=0.3,training=tf_train)
-    
-    concated = tf.concat([hidden_,encoder_context_vector],axis=-1)
+    concated = tf.concat([hidden,encoder_context_vector],axis=-1)
     
     linear_out = tf.nn.tanh(tf.matmul(concated,Wc))
     decoder_output = tf.matmul(linear_out,tf.transpose(tf_embd,[1,0])) 
@@ -409,10 +435,9 @@ accuracy = tf.reduce_mean(masked_comparison)
 ```python
 all_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
 
-optimizer = tf.contrib.opt.NadamOptimizer(
-    learning_rate=learning_rate)
+optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
 
-gvs = optimizer.compute_gradients(cost, var_list=all_vars)
+gvs = optimizer.compute_gradients(cost, all_vars)
 
 capped_gvs = [(tf.clip_by_norm(grad, 5), var) for grad, var in gvs] # Gradient Clipping
 
@@ -572,75 +597,39 @@ with tf.Session() as sess:  # Start Tensorflow Session
 ```
 
     
-    Load checkpoint? y/n: n
+    Load checkpoint? y/n:  n
+
+
     
     
     
     STARTING TRAINING
     
     
-    Iter 0, Cost= 2.086, Acc = 0.00%
+    Iter 0, Cost= 1.493, Acc = 0.00%
     
     Sample Text
     
-    i 'm not a big pretzel eater , but i love this little <UNK> nibblers . i like the low fat snack and how it fills you up .
+    i was given these as a gift ... they were so amazing i now order them for all occasions and sometimes just because i had n't had them in a while . a little warning ; they are completely addictive . i like the <UNK> ones ; my girlfriend likes the rocky road . highly recommended ! < br / > < br / > sure to be appreciated by everyone on your gift list .
     
     Sample Predicted Summary
     
-    municipality jackass municipality mongolian seats han han mongolian hah sus sus wat hah casbah dynasty province 
+    condolence s.e. foodstuff condolence webbed poverty squarely poverty poverty assists foodstuff webbed poverty methodist foodstuff webbed poverty gephardt foodstuff ethier articulos meh rojos cols colombians webbed poverty condolence poverty condolence hourly 
     
     Sample Actual Summary
     
-    great pretzels 
+    simply amazing brownies ... 
     
     
-    Iter 100, Cost= 0.985, Acc = 35.58%
-    Iter 200, Cost= 0.914, Acc = 33.33%
-    Iter 300, Cost= 0.928, Acc = 36.11%
-    Iter 400, Cost= 0.943, Acc = 35.19%
-    Iter 500, Cost= 0.676, Acc = 42.71%
-    
-    Sample Text
-    
-    we <UNK> this one , but the flavor could have been a tad stronger . very yummy tho , we will totally purchase again !
-    
-    Sample Predicted Summary
-    
-    delicious ! 
-    
-    Sample Actual Summary
-    
-    very good ! 
-    
-    
-    Iter 600, Cost= 0.878, Acc = 35.24%
-    Iter 700, Cost= 0.949, Acc = 33.04%
-    Iter 800, Cost= 1.074, Acc = 34.65%
-    Iter 900, Cost= 0.831, Acc = 44.21%
-    Iter 1000, Cost= 0.911, Acc = 36.36%
+    Iter 100, Cost= 0.684, Acc = 26.98%
+    Iter 200, Cost= 0.649, Acc = 27.19%
+    Iter 300, Cost= 0.744, Acc = 25.93%
+    Iter 400, Cost= 0.976, Acc = 19.88%
+    Iter 500, Cost= 0.839, Acc = 21.53%
     
     Sample Text
     
-    tried this hoping for something better than the thick salsa that everyone else makes and it was great ! after making our own it gets time consuming so this is a good alternative .
-    
-    Sample Predicted Summary
-    
-    great 
-    
-    Sample Actual Summary
-    
-    great salsa 
-    
-    
-    Iter 1100, Cost= 1.081, Acc = 23.33%
-    Iter 1200, Cost= 1.018, Acc = 32.73%
-    Iter 1300, Cost= 0.902, Acc = 35.87%
-    Iter 1400, Cost= 0.946, Acc = 31.07%
-    Iter 1500, Cost= 0.798, Acc = 42.31%
-    
-    Sample Text
-    
-    i had a coupon for this so it was a good value . otherwise it is to expense for what you get . my box had a couple of opened cereals in it so i did n't get the full value of all ...
+    for those looking for a <UNK> water beverage and one with a neutral taste that does n't have <UNK> aftertaste , this one 's for <UNK> < br / > < br / > also , traditional tap water is slightly more acidic ( i believe ph 7-8 ) . <UNK> 's is supposed at 9.5 ph , so if you 're very sensitive to acidic products , this might help you out .
     
     Sample Predicted Summary
     
@@ -648,37 +637,18 @@ with tf.Session() as sess:  # Start Tensorflow Session
     
     Sample Actual Summary
     
-    good value 
+    neutral taste , low ph 
     
     
-    Iter 1600, Cost= 0.871, Acc = 33.33%
-    Iter 1700, Cost= 0.943, Acc = 40.00%
-    Iter 1800, Cost= 0.876, Acc = 40.20%
-    Iter 1900, Cost= 0.973, Acc = 37.25%
-    Iter 2000, Cost= 0.978, Acc = 29.73%
-    
-    Sample Text
-    
-    my 4 dogs all had allergies and are just fine now that i switched to <UNK> the <UNK> one smell abit but <UNK> they still love it <UNK> the dried <UNK> canned r terrific <UNK> nooo grani !
-    
-    Sample Predicted Summary
-    
-    <UNK> ! 
-    
-    Sample Actual Summary
-    
-    great food 
-    
-    
-    Iter 2100, Cost= 0.907, Acc = 37.04%
-    Iter 2200, Cost= 0.928, Acc = 34.31%
-    Iter 2300, Cost= 0.906, Acc = 31.25%
-    Iter 2400, Cost= 0.903, Acc = 37.00%
-    Iter 2500, Cost= 0.811, Acc = 33.01%
+    Iter 600, Cost= 0.697, Acc = 27.82%
+    Iter 700, Cost= 0.763, Acc = 24.24%
+    Iter 800, Cost= 0.792, Acc = 24.82%
+    Iter 900, Cost= 0.866, Acc = 23.13%
+    Iter 1000, Cost= 0.838, Acc = 23.03%
     
     Sample Text
     
-    the chocolate was a little crumbly , but the taste is very good . my hubby has <UNK> , and it is gluten free , so it is an excellent bar to stock in the pantry for whenever he does n't have time for breakfast .
+    i love my starbucks sumatra first thing in the morning . i was not always up early enough to take the detour to starbucks and now i do n't have to ! these <UNK> are perfect and delicious . now i can have my fav coffee even before i take off my slippers ! i love this product ! it 's easy to order - arrived quickly and the price was good .
     
     Sample Predicted Summary
     
@@ -686,174 +656,18 @@ with tf.Session() as sess:  # Start Tensorflow Session
     
     Sample Actual Summary
     
-    yum 
+    no drive through at starbucks ? 
     
     
-    Iter 2600, Cost= 0.839, Acc = 34.62%
-    Iter 2700, Cost= 0.927, Acc = 37.07%
-    Iter 2800, Cost= 0.853, Acc = 36.73%
-    Iter 2900, Cost= 0.805, Acc = 40.00%
-    Iter 3000, Cost= 0.855, Acc = 35.51%
-    
-    Sample Text
-    
-    tea came packaged as expected , delivered quickly and with stash you can not go wrong . individually wrapped and stays fresh and very flavorful . highly recommended for the earl gray tea lover .
-    
-    Sample Predicted Summary
-    
-    delicious tea 
-    
-    Sample Actual Summary
-    
-    great tea 
-    
-    
-    Iter 3100, Cost= 0.854, Acc = 36.63%
-    
-    
-    STARTING VALIDATION
-    
-    
-    Validating data # 0
-    Validating data # 100
-    Validating data # 200
-    Validating data # 300
-    
-    
-    Epoch: 0
-    
-    
-    Average Training Loss: 0.907
-    Average Training Accuracy: 35.42
-    Average Validation Loss: 0.865
-    Average Validation Accuracy: 36.65
-    
-    Model saved
-    
-    
-    
-    STARTING TRAINING
-    
-    
-    Iter 0, Cost= 0.808, Acc = 34.34%
+    Iter 1100, Cost= 0.648, Acc = 30.58%
+    Iter 1200, Cost= 0.977, Acc = 19.08%
+    Iter 1300, Cost= 0.788, Acc = 23.29%
+    Iter 1400, Cost= 0.681, Acc = 28.23%
+    Iter 1500, Cost= 0.608, Acc = 29.32%
     
     Sample Text
     
-    quaker oatmeal squares has been our family favorite for a couple of years now . ca n't get enough of it . just the right sweetness and crunch .
-    
-    Sample Predicted Summary
-    
-    great 
-    
-    Sample Actual Summary
-    
-    favorite cereal 
-    
-    
-    Iter 100, Cost= 1.036, Acc = 34.26%
-    Iter 200, Cost= 0.934, Acc = 33.03%
-    Iter 300, Cost= 0.972, Acc = 35.85%
-    Iter 400, Cost= 0.926, Acc = 32.35%
-    Iter 500, Cost= 0.738, Acc = 41.05%
-    
-    Sample Text
-    
-    great taste , nice smell , great <UNK> < br / > if you mix it with fresh ment you will get fantastic <UNK> < br / > i will buy it again .
-    
-    Sample Predicted Summary
-    
-    great 
-    
-    Sample Actual Summary
-    
-    the best 
-    
-    
-    Iter 600, Cost= 0.858, Acc = 41.24%
-    Iter 700, Cost= 0.905, Acc = 36.45%
-    Iter 800, Cost= 0.795, Acc = 35.05%
-    Iter 900, Cost= 0.806, Acc = 37.50%
-    Iter 1000, Cost= 0.795, Acc = 35.64%
-    
-    Sample Text
-    
-    i bought about 5 different kinds of <UNK> when i first got my coffee maker , which i love by the way , and i 'd have to say that this was my favorite one out of them all . it has the perfect balance of everything , i was really surprised .
-    
-    Sample Predicted Summary
-    
-    great 
-    
-    Sample Actual Summary
-    
-    excellent stuff 
-    
-    
-    Iter 1100, Cost= 0.825, Acc = 39.42%
-    Iter 1200, Cost= 0.743, Acc = 38.78%
-    Iter 1300, Cost= 0.813, Acc = 41.84%
-    Iter 1400, Cost= 0.933, Acc = 29.66%
-    Iter 1500, Cost= 0.978, Acc = 33.61%
-    
-    Sample Text
-    
-    i really wanted to like this , as it was organic , and came in a glass bottle , but there was hardly any flavor at all . i could barely smell it , and even when i poured a generous amount on my dish , it imparts little to no truffle <UNK> . my truffle salt is much more potent .
-    
-    Sample Predicted Summary
-    
-    good 
-    
-    Sample Actual Summary
-    
-    weak 
-    
-    
-    Iter 1600, Cost= 0.778, Acc = 45.10%
-    Iter 1700, Cost= 0.855, Acc = 38.83%
-    Iter 1800, Cost= 0.815, Acc = 41.58%
-    Iter 1900, Cost= 0.853, Acc = 37.62%
-    Iter 2000, Cost= 1.003, Acc = 32.74%
-    
-    Sample Text
-    
-    i love milk chocolate and do n't like dark <UNK> . my husband is the opposite , so i always buy him the dark stuff and it 's safe for him , haha ! until i happened to try this one . it 's awesome !
-    
-    Sample Predicted Summary
-    
-    <UNK> ! 
-    
-    Sample Actual Summary
-    
-    it 's good ! ! 
-    
-    
-    Iter 2100, Cost= 0.817, Acc = 37.74%
-    Iter 2200, Cost= 0.977, Acc = 33.33%
-    Iter 2300, Cost= 0.840, Acc = 35.96%
-    Iter 2400, Cost= 0.749, Acc = 31.58%
-    Iter 2500, Cost= 0.885, Acc = 31.73%
-    
-    Sample Text
-    
-    the best thing about this coffee is the sweet smell , just like a blueberry muffin . the taste is good , not as sweet as i was expecting but it was good nonetheless . its a nice treat when you 're craving something sweet but it wo n't replace my morning donut shop coffee : )
-    
-    Sample Predicted Summary
-    
-    delicious 
-    
-    Sample Actual Summary
-    
-    smells yummy : ) 
-    
-    
-    Iter 2600, Cost= 0.887, Acc = 32.73%
-    Iter 2700, Cost= 0.780, Acc = 44.94%
-    Iter 2800, Cost= 0.899, Acc = 35.71%
-    Iter 2900, Cost= 0.797, Acc = 38.24%
-    Iter 3000, Cost= 1.061, Acc = 33.33%
-    
-    Sample Text
-    
-    this tea is wonderful , one bag will make three cups for most people . i like my tea very strong so these were perfect . i bet they will be good for making a good ice tea .
+    husband loves this tea especially in the <UNK> recommend using the large cup setting on your keurig brewer unless you prefer your tea extra strong .
     
     Sample Predicted Summary
     
@@ -861,79 +675,18 @@ with tf.Session() as sess:  # Start Tensorflow Session
     
     Sample Actual Summary
     
-    one bag 3 cups 
+    good substitute for coffee . 
     
     
-    Iter 3100, Cost= 0.769, Acc = 37.86%
-    
-    
-    STARTING VALIDATION
-    
-    
-    Validating data # 0
-    Validating data # 100
-    Validating data # 200
-    Validating data # 300
-    
-    
-    Epoch: 1
-    
-    
-    Average Training Loss: 0.863
-    Average Training Accuracy: 36.40
-    Average Validation Loss: 0.837
-    Average Validation Accuracy: 37.30
-    
-    Model saved
-    
-    
-    
-    STARTING TRAINING
-    
-    
-    Iter 0, Cost= 0.959, Acc = 35.85%
+    Iter 1600, Cost= 0.709, Acc = 27.48%
+    Iter 1700, Cost= 0.729, Acc = 31.11%
+    Iter 1800, Cost= 0.627, Acc = 28.93%
+    Iter 1900, Cost= 0.798, Acc = 26.36%
+    Iter 2000, Cost= 0.856, Acc = 22.08%
     
     Sample Text
     
-    really good bars . you could cut this baby in 1/2 and have 2 snacks out of it ! i bought 1 at the store first to see if i liked them and paid lots more for it . i do n't eat alot of meat so this caught my eye . i now have them on auto delivery ! !
-    
-    Sample Predicted Summary
-    
-    great ! 
-    
-    Sample Actual Summary
-    
-    great bars ! 
-    
-    
-    Iter 100, Cost= 0.792, Acc = 33.33%
-    Iter 200, Cost= 0.781, Acc = 35.29%
-    Iter 300, Cost= 0.825, Acc = 40.74%
-    Iter 400, Cost= 0.793, Acc = 40.19%
-    Iter 500, Cost= 0.860, Acc = 31.07%
-    
-    Sample Text
-    
-    i always buy my coffee from amazon as the prices are cheaper and i love all the coffee . best price on line .
-    
-    Sample Predicted Summary
-    
-    great coffee 
-    
-    Sample Actual Summary
-    
-    peggy 
-    
-    
-    Iter 600, Cost= 0.990, Acc = 28.57%
-    Iter 700, Cost= 0.736, Acc = 41.41%
-    Iter 800, Cost= 0.826, Acc = 33.68%
-    Iter 900, Cost= 0.904, Acc = 35.24%
-    Iter 1000, Cost= 0.858, Acc = 35.71%
-    
-    Sample Text
-    
-    i am very pleased with this product and the company sent it on a timely basis , well packed to prevent breakage .
+    can no longer find this product locally anymore . i purchased it previously at a warehouse club but costco , bj ` s and sam ` s club no longer stock it in my area stores . my two golden retriever ` s love this gravy when added to their mix of both dry and moist dog food . hope it stays on the market ... <UNK> !
     
     Sample Predicted Summary
     
@@ -941,419 +694,45 @@ with tf.Session() as sess:  # Start Tensorflow Session
     
     Sample Actual Summary
     
-    good stuff 
+    best pet food gravy 
     
     
-    Iter 1100, Cost= 0.999, Acc = 30.36%
-    Iter 1200, Cost= 0.726, Acc = 44.79%
-    Iter 1300, Cost= 0.798, Acc = 36.73%
-    Iter 1400, Cost= 0.712, Acc = 48.98%
-    Iter 1500, Cost= 0.884, Acc = 38.18%
-    
-    Sample Text
-    
-    i love this cereal , easy to eat out of the box . sweet but not too sweet and very crunchy . since frosted mini wheats have gelatin in them they are not an option for vegans or vegetarians , these are the best replacement .
-    
-    Sample Predicted Summary
-    
-    <UNK> 
-    
-    Sample Actual Summary
-    
-    love it . 
-    
-    
-    Iter 1600, Cost= 0.819, Acc = 44.12%
-    Iter 1700, Cost= 0.958, Acc = 32.11%
-    Iter 1800, Cost= 0.800, Acc = 37.96%
-    Iter 1900, Cost= 0.649, Acc = 40.82%
-    Iter 2000, Cost= 0.900, Acc = 36.21%
+    Iter 2100, Cost= 0.640, Acc = 30.77%
+    Iter 2200, Cost= 0.792, Acc = 24.49%
+    Iter 2300, Cost= 0.735, Acc = 22.86%
+    Iter 2400, Cost= 0.769, Acc = 21.68%
+    Iter 2500, Cost= 0.900, Acc = 21.15%
     
     Sample Text
     
-    i have been buying these bars ( without chocolate ) for years and have recently found them with the chocolate . our family of six loves them . they are a great bar to hold you over and give you extended fuel , made with great ingredients to boot . i highly recommend you try a box !
+    i want to start out by saying that i thought at first that a bag with only 120 calories and 4 grams of fat ( no saturated or trans ) for every 20 chips was going to taste like crap . i must say that not only was i wrong , that this is my favorite bbq chip on the market today . they are light and you can not taste any fat or grease after eating them . that 's because they are n't baked or fried , just popped as their name suggests . these chips are very easy to dip as well . fantastic product !
     
     Sample Predicted Summary
     
-    great ! 
+    great chips 
     
     Sample Actual Summary
     
-    <UNK> ! 
+    fantastic chips ! ! ! 
     
     
-    Iter 2100, Cost= 0.767, Acc = 36.19%
-    Iter 2200, Cost= 0.676, Acc = 37.62%
-    Iter 2300, Cost= 0.871, Acc = 40.00%
-    Iter 2400, Cost= 0.687, Acc = 39.60%
-    Iter 2500, Cost= 0.898, Acc = 36.27%
+    Iter 2600, Cost= 0.740, Acc = 22.86%
+    Iter 2700, Cost= 0.848, Acc = 24.84%
+    Iter 2800, Cost= 0.677, Acc = 28.57%
+    Iter 2900, Cost= 0.779, Acc = 25.90%
+    Iter 3000, Cost= 0.718, Acc = 27.34%
     
     Sample Text
     
-    this is top notch almond syrup . we put it in lemonade and strawberries . great for many <UNK> < br / > also use in baking recipes .
+    this <UNK> of 7-ounce `` taster 's choice french roast '' canisters , is a good buy . the coffee is flavored differently than original flavor , but the difference is very subtle , and refreshingly good . overall , this taster 's choice coffee is a bargain , and highly recommended .
     
     Sample Predicted Summary
     
-    great 
+    great flavor 
     
     Sample Actual Summary
     
-    soooo yummy 
-    
-    
-    Iter 2600, Cost= 0.796, Acc = 40.74%
-    Iter 2700, Cost= 0.775, Acc = 46.00%
-    Iter 2800, Cost= 0.856, Acc = 40.19%
-    Iter 2900, Cost= 0.954, Acc = 35.85%
-    Iter 3000, Cost= 0.831, Acc = 35.40%
-    
-    Sample Text
-    
-    this is very good coffee at a good price ... it is an old product that has been on the market since i was quite young .
-    
-    Sample Predicted Summary
-    
-    coffee 
-    
-    Sample Actual Summary
-    
-    good stuff ! 
-    
-    
-    Iter 3100, Cost= 0.754, Acc = 36.27%
-    
-    
-    STARTING VALIDATION
-    
-    
-    Validating data # 0
-    Validating data # 100
-    Validating data # 200
-    Validating data # 300
-    
-    
-    Epoch: 2
-    
-    
-    Average Training Loss: 0.840
-    Average Training Accuracy: 37.26
-    Average Validation Loss: 0.818
-    Average Validation Accuracy: 38.42
-    
-    Model saved
-    
-    
-    
-    STARTING TRAINING
-    
-    
-    Iter 0, Cost= 0.822, Acc = 36.36%
-    
-    Sample Text
-    
-    the chocolate covered figs were delicious and presented beautifully in the package . great for a gift for someone who has everything .
-    
-    Sample Predicted Summary
-    
-    delicious 
-    
-    Sample Actual Summary
-    
-    figs 
-    
-    
-    Iter 100, Cost= 0.734, Acc = 37.86%
-    Iter 200, Cost= 0.837, Acc = 41.18%
-    Iter 300, Cost= 0.717, Acc = 34.91%
-    Iter 400, Cost= 0.797, Acc = 38.61%
-    Iter 500, Cost= 0.718, Acc = 32.38%
-    
-    Sample Text
-    
-    one of my favorite flavors of <UNK> , it used to be called twisted tornado , now called fruit twist either way i ca n't stop myself from eating its so flavorful = )
-    
-    Sample Predicted Summary
-    
-    great ! 
-    
-    Sample Actual Summary
-    
-    yum 
-    
-    
-    Iter 600, Cost= 0.846, Acc = 40.59%
-    Iter 700, Cost= 0.676, Acc = 43.75%
-    Iter 800, Cost= 0.882, Acc = 39.22%
-    Iter 900, Cost= 0.803, Acc = 36.54%
-    Iter 1000, Cost= 0.718, Acc = 40.40%
-    
-    Sample Text
-    
-    i found this product to be a nice tasting pepper blend and would recommend it to all of those who enjoy the fresh flavor of ground pepper .
-    
-    Sample Predicted Summary
-    
-    good taste 
-    
-    Sample Actual Summary
-    
-    peppercorn mix 
-    
-    
-    Iter 1100, Cost= 0.749, Acc = 41.24%
-    Iter 1200, Cost= 0.821, Acc = 38.10%
-    Iter 1300, Cost= 0.883, Acc = 39.81%
-    Iter 1400, Cost= 0.961, Acc = 29.91%
-    Iter 1500, Cost= 1.130, Acc = 33.96%
-    
-    Sample Text
-    
-    bought the popper about two years ago and have been enjoying the delicious fresh buttery salty ( as i want ) best popcorn ever . love it and it 's a staple snack in our house . would never <UNK> corn again .
-    
-    Sample Predicted Summary
-    
-    great 
-    
-    Sample Actual Summary
-    
-    top notch 
-    
-    
-    Iter 1600, Cost= 0.855, Acc = 35.24%
-    Iter 1700, Cost= 0.701, Acc = 38.61%
-    Iter 1800, Cost= 0.865, Acc = 35.64%
-    Iter 1900, Cost= 0.868, Acc = 39.62%
-    Iter 2000, Cost= 0.849, Acc = 40.78%
-    
-    Sample Text
-    
-    i love sour stuff . this is n't too sour but still gets the job done . good chewy candy . arrived faster than expected too .
-    
-    Sample Predicted Summary
-    
-    good 
-    
-    Sample Actual Summary
-    
-    mmmmm 
-    
-    
-    Iter 2100, Cost= 0.951, Acc = 32.73%
-    Iter 2200, Cost= 0.875, Acc = 31.68%
-    Iter 2300, Cost= 0.866, Acc = 42.20%
-    Iter 2400, Cost= 0.725, Acc = 46.32%
-    Iter 2500, Cost= 0.793, Acc = 35.71%
-    
-    Sample Text
-    
-    i had not tried this tea before but i was hoping it was similar to one i tried while in england . i was not disappointed . the pack of 6 makes it a very good value as well .
-    
-    Sample Predicted Summary
-    
-    tea tea 
-    
-    Sample Actual Summary
-    
-    love this tea ! 
-    
-    
-    Iter 2600, Cost= 0.864, Acc = 34.82%
-    Iter 2700, Cost= 0.853, Acc = 38.10%
-    Iter 2800, Cost= 0.694, Acc = 40.40%
-    Iter 2900, Cost= 1.020, Acc = 34.26%
-    Iter 3000, Cost= 0.782, Acc = 43.00%
-    
-    Sample Text
-    
-    extremely disappointing . frankly , i think plain old lipton tea is smoother and less bitter . when brewed , i could hardly recognize it as green tea . it tasted more like a very poor earl gray .
-    
-    Sample Predicted Summary
-    
-    sad 
-    
-    Sample Actual Summary
-    
-    not good at all 
-    
-    
-    Iter 3100, Cost= 0.756, Acc = 35.64%
-    
-    
-    STARTING VALIDATION
-    
-    
-    Validating data # 0
-    Validating data # 100
-    Validating data # 200
-    Validating data # 300
-    
-    
-    Epoch: 3
-    
-    
-    Average Training Loss: 0.820
-    Average Training Accuracy: 38.18
-    Average Validation Loss: 0.801
-    Average Validation Accuracy: 39.24
-    
-    Model saved
-    
-    
-    
-    STARTING TRAINING
-    
-    
-    Iter 0, Cost= 0.821, Acc = 39.00%
-    
-    Sample Text
-    
-    love this tea . i do not like the plain sleepytime but adding the vanilla is a great move ! highly recommend it . looking forward to trying the honey sleepy time !
-    
-    Sample Predicted Summary
-    
-    love ! 
-    
-    Sample Actual Summary
-    
-    love it 
-    
-    
-    Iter 100, Cost= 0.725, Acc = 37.00%
-    Iter 200, Cost= 0.805, Acc = 39.29%
-    Iter 300, Cost= 0.838, Acc = 41.23%
-    Iter 400, Cost= 0.713, Acc = 49.07%
-    Iter 500, Cost= 0.722, Acc = 37.86%
-    
-    Sample Text
-    
-    the product arrived quickly . all bags and chips were in place ... and safe ; <UNK> these chips are delicious and only four ww points !
-    
-    Sample Predicted Summary
-    
-    delicious 
-    
-    Sample Actual Summary
-    
-    yum ! 
-    
-    
-    Iter 600, Cost= 0.941, Acc = 34.82%
-    Iter 700, Cost= 0.678, Acc = 42.00%
-    Iter 800, Cost= 0.607, Acc = 47.47%
-    Iter 900, Cost= 0.679, Acc = 41.94%
-    Iter 1000, Cost= 0.763, Acc = 48.60%
-    
-    Sample Text
-    
-    this is a light to medium roast , wish it was slightly stronger , but the flavor is good and i am having it every morning using 2 6 oz . <UNK> pumps to make it as strong as possible .
-    
-    Sample Predicted Summary
-    
-    very good 
-    
-    Sample Actual Summary
-    
-    i like it ! 
-    
-    
-    Iter 1100, Cost= 0.671, Acc = 44.44%
-    Iter 1200, Cost= 0.810, Acc = 39.81%
-    Iter 1300, Cost= 0.899, Acc = 31.78%
-    Iter 1400, Cost= 0.865, Acc = 39.42%
-    Iter 1500, Cost= 0.809, Acc = 36.54%
-    
-    Sample Text
-    
-    i expected a little more flavor as i usually like green mountain <UNK> < br / > next time i 'll look for a french roast !
-    
-    Sample Predicted Summary
-    
-    good 
-    
-    Sample Actual Summary
-    
-    too weak 
-    
-    
-    Iter 1600, Cost= 0.873, Acc = 39.45%
-    Iter 1700, Cost= 0.882, Acc = 38.14%
-    Iter 1800, Cost= 0.953, Acc = 34.86%
-    Iter 1900, Cost= 0.961, Acc = 33.66%
-    Iter 2000, Cost= 0.774, Acc = 35.92%
-    
-    Sample Text
-    
-    i use this sauce on pork ribs , after baking them at 300 degrees for 3 hours . the sweet taste of honey along with the tomato is heavenly .
-    
-    Sample Predicted Summary
-    
-    great sauce 
-    
-    Sample Actual Summary
-    
-    the best 
-    
-    
-    Iter 2100, Cost= 0.744, Acc = 39.13%
-    Iter 2200, Cost= 0.697, Acc = 41.58%
-    Iter 2300, Cost= 0.869, Acc = 34.26%
-    Iter 2400, Cost= 0.867, Acc = 31.48%
-    Iter 2500, Cost= 0.784, Acc = 38.14%
-    
-    Sample Text
-    
-    excellent < a <UNK> '' http : <UNK> '' > kellogg 's cereal in a cup , favorite assortment pack , 1.5 - <UNK> <UNK> cups ( pack of 60 ) < <UNK> >
-    
-    Sample Predicted Summary
-    
-    good 
-    
-    Sample Actual Summary
-    
-    kelloggs 
-    
-    
-    Iter 2600, Cost= 0.653, Acc = 45.45%
-    Iter 2700, Cost= 0.713, Acc = 46.73%
-    Iter 2800, Cost= 0.777, Acc = 39.05%
-    Iter 2900, Cost= 0.795, Acc = 38.10%
-    Iter 3000, Cost= 0.802, Acc = 41.12%
-    
-    Sample Text
-    
-    this is a good product . the honey tastes great , and it 's very convenient and <UNK> . my local <UNK> store was trying to sell this to me for twice the price as amazon , so i 'm pretty sure this is a good buy .
-    
-    Sample Predicted Summary
-    
-    great 
-    
-    Sample Actual Summary
-    
-    honey ! 
-    
-    
-    Iter 3100, Cost= 0.773, Acc = 45.54%
-    
-    
-    STARTING VALIDATION
-    
-    
-    Validating data # 0
-    Validating data # 100
-    Validating data # 200
-    Validating data # 300
-    
-    
-    Epoch: 4
-    
-    
-    Average Training Loss: 0.804
-    Average Training Accuracy: 39.03
-    Average Validation Loss: 0.786
-    Average Validation Accuracy: 40.62
-    
-    Model saved
-    
+    good buy 
 
 
 ### Future Works
@@ -1363,3 +742,8 @@ with tf.Session() as sess:  # Start Tensorflow Session
 * BLEU\ROUGE evaluation
 * Implement Testing
 * Complete Training and Optimize Hyperparameters
+
+
+```python
+
+```
